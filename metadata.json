@@ -1,0 +1,6 @@
+{
+  "name": "ConstructMind AI",
+  "description": "An AI-powered BIM assistant for construction project analysis and intelligent chat interaction using IFC data.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
