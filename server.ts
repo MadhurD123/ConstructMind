@@ -4,6 +4,7 @@
  */
 
 import express from 'express';
+import 'dotenv/config';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
@@ -27,6 +28,11 @@ const projects: Record<string, any> = {};
 // Gemini AI setup
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
 });
 
 app.use(express.json({ limit: '50mb' }));
@@ -228,6 +234,11 @@ app.post('/api/chat', async (req, res) => {
   `;
 
   try {
+    if (!process.env.GEMINI_API_KEY) {
+      console.error('GEMINI_API_KEY is not set in environment variables');
+      return res.status(500).json({ error: 'Gemini API key is not configured on the server. Please check your .env file.' });
+    }
+
     const chat = ai.chats.create({
       model: 'gemini-3-flash-preview',
       config: {
@@ -239,8 +250,8 @@ app.post('/api/chat', async (req, res) => {
     const response = await chat.sendMessage({ message });
     res.json({ text: response.text });
   } catch (error: any) {
-    console.error('Gemini API error:', error);
-    res.status(500).json({ error: 'Failed to generate response' });
+    console.error('Gemini API error detail:', error);
+    res.status(500).json({ error: `Gemini API error: ${error.message || 'Unknown error'}` });
   }
 });
 
