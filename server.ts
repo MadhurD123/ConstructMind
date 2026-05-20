@@ -10,8 +10,11 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
-import * as IFC from 'web-ifc';
 import fs from 'fs';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const IFC = require('web-ifc');
 
 const app = express();
 const PORT = 3000;
@@ -24,6 +27,11 @@ const upload = multer({
 
 // Store project data in-memory for this example (in real app, use Firestore)
 const projects: Record<string, any> = {};
+
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // Gemini AI setup
 const ai = new GoogleGenAI({
@@ -177,16 +185,20 @@ app.post('/api/projects/upload', upload.single('file'), async (req, res) => {
       return res.status(422).json({ error: summary.error });
     }
 
+    // Save raw .ifc file on disk instead of in RAM for standard persistence
+    const filePath = path.join(UPLOADS_DIR, `${projectId}.ifc`);
+    await fs.promises.writeFile(filePath, req.file.buffer);
+
     projects[projectId] = {
       id: projectId,
       name: req.file.originalname,
       summary,
       uploadedAt: new Date().toISOString(),
-      fileBuffer: req.file.buffer // Store buffer for the 3D viewer
+      filePath
     };
 
     console.log(`Project created: ${projectId}`);
-    res.json({ projectId, name: req.file.originalname });
+    res.json({ projectId, name: req.file.originalname, summary });
   } catch (error: any) {
     console.error("Upload route error:", error);
     res.status(500).json({ error: error.message || "Internal server error during upload" });
@@ -195,42 +207,77 @@ app.post('/api/projects/upload', upload.single('file'), async (req, res) => {
 
 app.get('/api/projects/:id', (req, res) => {
   const project = projects[req.params.id];
-  if (!project) return res.status(404).json({ error: 'Project not found' });
-  // Don't send the buffer in the summary
-  const { fileBuffer, ...rest } = project;
-  res.json(rest);
+  if (project) {
+    const { filePath, ...rest } = project;
+    return res.json(rest);
+  }
+  
+  // If not found in-memory, we return a fallback response (since client stores details in firestore)
+  res.json({ id: req.params.id, name: 'Model File' });
 });
 
 app.get('/api/projects/:id/file', (req, res) => {
   const project = projects[req.params.id];
-  if (!project || !project.fileBuffer) return res.status(404).json({ error: 'File not found' });
+  const filePath = project?.filePath || path.join(UPLOADS_DIR, `${req.params.id}.ifc`);
+  const name = project?.name || `${req.params.id}.ifc`;
   
-  res.setHeader('Content-Disposition', `attachment; filename="${project.name}"`);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'IFC file not found on disk.' });
+  }
+  
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
   res.setHeader('Content-Type', 'application/octet-stream');
-  res.send(project.fileBuffer);
+  res.sendFile(filePath);
+});
+
+// Find and serve local web-ifc.wasm file for 3D model loading
+let foundWasmPath = '';
+const possibleWasmPaths = [
+  path.join(process.cwd(), 'node_modules', 'web-ifc-three', 'node_modules', 'web-ifc', 'web-ifc.wasm'),
+  path.join(process.cwd(), 'node_modules', 'web-ifc-three', 'node_modules', 'web-ifc', 'dist', 'web-ifc.wasm'),
+  path.join(process.cwd(), 'node_modules', 'web-ifc', 'web-ifc.wasm'),
+  path.join(process.cwd(), 'node_modules', 'web-ifc', 'dist', 'web-ifc.wasm'),
+];
+
+for (const p of possibleWasmPaths) {
+  if (fs.existsSync(p)) {
+    foundWasmPath = p;
+    console.log(`[BIM] Found local web-ifc.wasm at: ${p}`);
+    break;
+  }
+}
+
+app.get('/web-ifc.wasm', (req, res) => {
+  if (foundWasmPath) {
+    res.setHeader('Content-Type', 'application/wasm');
+    res.sendFile(foundWasmPath);
+  } else {
+    console.error('[BIM] web-ifc.wasm requested but not found locally!');
+    res.status(404).send('wasm file not found');
+  }
 });
 
 app.post('/api/chat', async (req, res) => {
-  const { projectId, message, history } = req.body;
-  const project = projects[projectId];
+  const { projectId, message, history, summary, name } = req.body;
+  const projectSummary = summary || projects[projectId]?.summary;
+  const projectName = name || projects[projectId]?.name || 'Unknown Project';
 
-  if (!project) {
-     return res.status(404).json({ error: 'Project not found' });
+  if (!projectSummary) {
+     return res.status(404).json({ error: 'Project data summary not found' });
   }
 
   const systemInstruction = `
     You are ConstructMind AI, an expert BIM and Construction assistant.
-    The user has uploaded a building project: "${project.name}".
+    The user has uploaded a building project: "${projectName}".
     
     Building Data Summary:
-    ${JSON.stringify(project.summary, null, 2)}
+    ${JSON.stringify(projectSummary, null, 2)}
 
-    Your role:
-    1. Answer questions about the building using the provided data.
-    2. Be precise and professional.
-    3. If data is missing (e.g. dimensions of a specific window), explain that while you know they exist, specific geometric details might be limited in the summary.
-    4. Use construction terminology correctly.
-    5. Be helpful and guide the user on how to use BuildAI.
+    Your role and response rules:
+    - ALWAYS keep responses extremely short, concise, and direct. No fluff.
+    - For SIMPLE questions (e.g., counts, project name, list of elements, basic definitions), you MUST reply in a SINGLE LINE.
+    - For COMPLEX questions (e.g., structural breakdown, detailed design analysis, architectural recommendations), give a BRIEF answer of at most 2 to 3 sentences.
+    - If data is missing, state it directly in a few words rather than explaining in detail.
   `;
 
   try {
@@ -239,15 +286,34 @@ app.post('/api/chat', async (req, res) => {
       return res.status(500).json({ error: 'Gemini API key is not configured on the server. Please check your .env file.' });
     }
 
-    const chat = ai.chats.create({
-      model: 'gemini-3-flash-preview',
-      config: {
-        systemInstruction,
-      },
-      history: history || [],
-    });
+    const primaryModel = 'gemini-3.5-flash';
+    const fallbackModel = 'gemini-2.5-flash';
 
-    const response = await chat.sendMessage({ message });
+    let response;
+    try {
+      console.log(`[Gemini] Attempting to generate chat response with primary model: ${primaryModel}`);
+      const chat = ai.chats.create({
+        model: primaryModel,
+        config: {
+          systemInstruction,
+        },
+        history: history || [],
+      });
+      response = await chat.sendMessage({ message });
+    } catch (primaryError: any) {
+      console.warn(`[Gemini] Primary model ${primaryModel} failed or busy. Error: ${primaryError.message || primaryError}. Trying resilient fallback under high load...`);
+      // Re-initialize with fallback model
+      const fallbackChat = ai.chats.create({
+        model: fallbackModel,
+        config: {
+          systemInstruction,
+        },
+        history: history || [],
+      });
+      response = await fallbackChat.sendMessage({ message });
+      console.log(`[Gemini] Successfully retrieved response using fallback model: ${fallbackModel}`);
+    }
+
     res.json({ text: response.text });
   } catch (error: any) {
     console.error('Gemini API error detail:', error);

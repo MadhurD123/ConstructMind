@@ -4,6 +4,28 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut, 
+  onAuthStateChanged,
+  User as FirebaseUser
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  getDoc,
+  collection, 
+  query, 
+  where, 
+  onSnapshot,
+  serverTimestamp,
+  getDocFromServer
+} from 'firebase/firestore';
+import firebaseConfig from '../firebase-applet-config.json';
 import { 
   Building2, 
   Upload, 
@@ -26,6 +48,60 @@ import { twMerge } from 'tailwind-merge';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+// --- Firebase Initialization ---
+const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const auth = getAuth(app);
+
+// Connection test on app start
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration.");
+    }
+  }
+}
+testConnection();
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+  };
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous
+    },
+    operationType,
+    path
+  };
+  console.error('[Firestore Error Details]: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
 }
 
 // --- Types ---
@@ -55,20 +131,126 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<'landing' | 'dashboard' | 'project'>('landing');
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Set up Firebase Auth listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+      
+      if (currentUser) {
+        // Automatically save/update user credentials in Firestore on first sign in
+        try {
+          const userDocRef = doc(db, 'users', currentUser.uid);
+          const userSnap = await getDoc(userDocRef);
+          if (!userSnap.exists()) {
+            await setDoc(userDocRef, {
+              uid: currentUser.uid,
+              email: currentUser.email,
+              displayName: currentUser.displayName || 'Anonymous User',
+              createdAt: serverTimestamp()
+            });
+          }
+        } catch (err) {
+          console.error("Failed to persist user credentials:", err);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Listen to the user's projects real-time in Firestore if authenticated
+  useEffect(() => {
+    if (!user) {
+      setProjects([]);
+      return;
+    }
+
+    const q = query(collection(db, 'projects'), where('ownerId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loaded: Project[] = [];
+      snapshot.forEach((docSnap) => {
+        const item = docSnap.data();
+        loaded.push({
+          id: item.id,
+          name: item.name,
+          uploadedAt: item.uploadedAt?.toDate?.()?.toISOString() || item.uploadedAt || new Date().toISOString(),
+          summary: item.summary
+        } as Project);
+      });
+      setProjects(loaded);
+    }, (error) => {
+      // Gracefully handle permission errors
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'projects');
+      } catch (e) {
+        console.error("Projects watch rejected or forbidden:", e);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user]);
 
   const selectedProject = projects.find(p => p.id === selectedProjectId);
 
+  // Authentication actions
+  const handleSignIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+      setCurrentPage('dashboard');
+    } catch (err: any) {
+      alert("Sign-in failed. Please ensure third-party popup blockers are allowed/disabled.");
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setCurrentPage('landing');
+      setSelectedProjectId(null);
+    } catch (err) {
+      console.error("Logout error:", err);
+    }
+  };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F0F1F3]">
+        <Loader2 className="w-10 h-10 animate-spin text-[var(--accent)]" />
+        <span className="text-sm font-medium text-gray-500 mt-4 uppercase tracking-widest">ConstructMind loader...</span>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-[#F0F1F3]">
-      <Navbar onNavigate={setCurrentPage} />
+      <Navbar 
+        onNavigate={setCurrentPage} 
+        user={user} 
+        onSignIn={handleSignIn} 
+        onSignOut={handleSignOut} 
+      />
       
       <main className="flex-1 flex flex-col">
-        {currentPage === 'landing' && <LandingPage onGetStarted={() => setCurrentPage('dashboard')} />}
+        {currentPage === 'landing' && (
+          <LandingPage 
+            onGetStarted={() => {
+              if (user) {
+                setCurrentPage('dashboard');
+              } else {
+                handleSignIn();
+              }
+            }} 
+            user={user}
+          />
+        )}
         {currentPage === 'dashboard' && (
           <Dashboard 
             projects={projects} 
             onProjectAdded={(p) => {
-              setProjects([...projects, p]);
               setSelectedProjectId(p.id);
               setCurrentPage('project');
             }} 
@@ -86,7 +268,17 @@ export default function App() {
   );
 }
 
-function Navbar({ onNavigate }: { onNavigate: (page: 'landing' | 'dashboard') => void }) {
+function Navbar({ 
+  onNavigate, 
+  user, 
+  onSignIn, 
+  onSignOut 
+}: { 
+  onNavigate: (page: 'landing' | 'dashboard') => void,
+  user: FirebaseUser | null,
+  onSignIn: () => void,
+  onSignOut: () => void
+}) {
   return (
     <nav className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between sticky top-0 z-50">
       <div className="flex items-center gap-2 cursor-pointer" onClick={() => onNavigate('landing')}>
@@ -97,17 +289,34 @@ function Navbar({ onNavigate }: { onNavigate: (page: 'landing' | 'dashboard') =>
       </div>
       
       <div className="hidden md:flex items-center gap-8 text-sm font-medium">
-        <button onClick={() => onNavigate('landing')} className="hover:text-[var(--accent)] transition-colors">How it works</button>
-        <button onClick={() => onNavigate('dashboard')} className="hover:text-[var(--accent)] transition-colors">My Projects</button>
-        <button className="bg-black text-white px-4 py-2 rounded-full hover:opacity-80 transition-opacity">
-          Sign In
-        </button>
+        <button onClick={() => onNavigate('landing')} className="hover:text-[var(--accent)] transition-colors cursor-pointer">How it works</button>
+        {user && (
+          <button onClick={() => onNavigate('dashboard')} className="hover:text-[var(--accent)] transition-colors cursor-pointer">My Projects</button>
+        )}
+        {user ? (
+          <div className="flex items-center gap-4">
+            <span className="text-gray-700 font-bold bg-orange-50 px-3 py-1.5 rounded-lg border border-orange-100 max-w-[200px] truncate">{user.displayName || user.email}</span>
+            <button 
+              onClick={onSignOut}
+              className="bg-black text-white px-4 py-2 rounded-full hover:opacity-80 transition-opacity cursor-pointer text-xs font-bold"
+            >
+              Sign Out
+            </button>
+          </div>
+        ) : (
+          <button 
+            onClick={onSignIn}
+            className="bg-black text-white px-5 py-2 rounded-full hover:opacity-80 transition-opacity cursor-pointer text-xs font-bold"
+          >
+            Sign In with Google
+          </button>
+        )}
       </div>
     </nav>
   );
 }
 
-function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
+function LandingPage({ onGetStarted, user }: { onGetStarted: () => void, user: FirebaseUser | null }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-4 overflow-hidden py-20">
       <motion.div 
@@ -132,10 +341,10 @@ function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
         <div className="flex items-center justify-center gap-4 pt-4">
           <button 
             onClick={onGetStarted}
-            className="group relative bg-black text-white px-8 py-4 rounded-full text-lg font-bold hover:scale-105 transition-all overflow-hidden"
+            className="group relative bg-black text-white px-8 py-4 rounded-full text-lg font-bold hover:scale-105 transition-all overflow-hidden cursor-pointer"
           >
             <span className="relative z-10 flex items-center gap-2">
-              Launch Assistant <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+              {user ? "Launch Assistant" : "Sign In to Start"} <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
             </span>
           </button>
         </div>
@@ -205,19 +414,33 @@ function Dashboard({ projects, onProjectAdded, onSelectProject }: {
         throw new Error('Failed to parse upload response. The server may be under heavy load.');
       }
       
-      // Now fetch the full project details
-      const fullResp = await fetch(`/api/projects/${data.projectId}`);
-      if (!fullResp.ok) {
-         throw new Error('Failed to retrieve project analysis. Please try again.');
+      // Save project properties to Firestore under /projects/{projectId}
+      if (auth.currentUser) {
+        try {
+          const projectDocRef = doc(db, 'projects', data.projectId);
+          const projectPayload = {
+            id: data.projectId,
+            name: data.name,
+            summary: data.summary,
+            uploadedAt: serverTimestamp(),
+            ownerId: auth.currentUser.uid
+          };
+          await setDoc(projectDocRef, projectPayload);
+          
+          const localProject: Project = {
+            id: data.projectId,
+            name: data.name,
+            summary: data.summary,
+            uploadedAt: new Date().toISOString()
+          };
+          onProjectAdded(localProject);
+        } catch (dbErr) {
+          console.error("Error setting project in firestore: ", dbErr);
+          handleFirestoreError(dbErr, OperationType.CREATE, `projects/${data.projectId}`);
+        }
+      } else {
+        throw new Error("You must be signed in to upload and save projects.");
       }
-      
-      let projectData;
-      try {
-        projectData = await fullResp.json();
-      } catch (e) {
-        throw new Error('Failed to parse project data. The analysis resulted in an invalid format.');
-      }
-      onProjectAdded(projectData);
       
       // Reset input so user can upload another/same file
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -316,8 +539,8 @@ function BIMPreview({ project }: { project: Project }) {
       setLoadError(null);
       try {
         const loader = new IFCLoader();
-        // Use CDN for WASM to avoid local path issues in preview
-        loader.ifcManager.setWasmPath('https://unpkg.com/web-ifc@0.0.77/');
+        // Serve web-ifc.wasm locally from the app server to prevent third-party constraints, CORS, or sandbox errors
+        loader.ifcManager.setWasmPath(window.location.origin + '/');
         
         loader.load(
           `/api/projects/${project.id}/file`,
@@ -518,6 +741,8 @@ function ProjectView({ project, onBack }: { project: Project, onBack: () => void
           projectId: project.id,
           message: input,
           history: messages,
+          summary: project.summary,
+          name: project.name
         }),
       });
 

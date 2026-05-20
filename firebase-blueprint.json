@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile credentials and registration details",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique user ID from Firebase Auth"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the user"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the user"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when user document was created"
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "BIM model analysis project details and summary mapping",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the project"
+        },
+        "name": {
+          "type": "string",
+          "description": "Original IFC file name"
+        },
+        "summary": {
+          "type": "object",
+          "description": "Parsed statistics and structures of the BIM model"
+        },
+        "uploadedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the project was created"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "ID of the user who uploaded the project"
+        }
+      },
+      "required": ["id", "name", "summary", "uploadedAt", "ownerId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User credential documents"
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Project documents containing IFC metadata and summary analysis"
+    }
+  }
+}
