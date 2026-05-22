@@ -216,6 +216,40 @@ app.get('/api/projects/:id', (req, res) => {
   res.json({ id: req.params.id, name: 'Model File' });
 });
 
+app.get('/api/projects/:id/file-exists', (req, res) => {
+  const project = projects[req.params.id];
+  const filePath = project?.filePath || path.join(UPLOADS_DIR, `${req.params.id}.ifc`);
+  res.json({ exists: fs.existsSync(filePath) });
+});
+
+app.post('/api/projects/:id/restore', upload.single('file'), async (req, res) => {
+  console.log(`Received restore upload request for project: ${req.params.id}`);
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const projectId = req.params.id;
+    // Save raw .ifc file on disk
+    const filePath = path.join(UPLOADS_DIR, `${projectId}.ifc`);
+    await fs.promises.writeFile(filePath, req.file.buffer);
+
+    // Keep it in server-side state too
+    projects[projectId] = {
+      id: projectId,
+      name: req.file.originalname,
+      filePath,
+      uploadedAt: new Date().toISOString()
+    };
+
+    console.log(`Project restored: ${projectId}`);
+    res.json({ success: true, projectId });
+  } catch (error: any) {
+    console.error("Restore route error:", error);
+    res.status(500).json({ error: error.message || "Internal server error during restore" });
+  }
+});
+
 app.get('/api/projects/:id/file', (req, res) => {
   const project = projects[req.params.id];
   const filePath = project?.filePath || path.join(UPLOADS_DIR, `${req.params.id}.ifc`);

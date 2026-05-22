@@ -11,7 +11,9 @@ import {
   GoogleAuthProvider, 
   signOut, 
   onAuthStateChanged,
-  User as FirebaseUser
+  User as FirebaseUser,
+  signInWithRedirect,
+  getRedirectResult
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -127,12 +129,22 @@ interface ChatMessage {
 
 // --- Components ---
 
+const isCookieCheckHtml = (text: string): boolean => {
+  return typeof text === 'string' && (
+    text.includes('Cookie check') || 
+    text.includes('aistudio_auth_flow_may_set_cookies') || 
+    text.includes('Authenticate in new window') ||
+    text.includes('Action required to load your app')
+  );
+};
+
 export default function App() {
   const [currentPage, setCurrentPage] = useState<'landing' | 'dashboard' | 'project'>('landing');
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [cookieCheckFailed, setCookieCheckFailed] = useState(false);
 
   // Set up Firebase Auth listener
   useEffect(() => {
@@ -195,14 +207,52 @@ export default function App() {
 
   const selectedProject = projects.find(p => p.id === selectedProjectId);
 
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [showAuthErrorModal, setShowAuthErrorModal] = useState(false);
+
+  // Handle redirect result on component mount/load
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          console.log("Successful redirect login: ", result.user);
+          setCurrentPage('dashboard');
+        }
+      })
+      .catch((err) => {
+        console.error("Error retrieving redirect result:", err);
+        setAuthError(err.message || String(err));
+        setShowAuthErrorModal(true);
+      });
+  }, []);
+
   // Authentication actions
   const handleSignIn = async () => {
     const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
     try {
       await signInWithPopup(auth, provider);
       setCurrentPage('dashboard');
     } catch (err: any) {
-      alert("Sign-in failed. Please ensure third-party popup blockers are allowed/disabled.");
+      console.error("Sign-in popup error details:", err);
+      // If the user cancelled or another popup request was cancelled, we don't need to show a huge info modal.
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      setAuthError(err.message || String(err));
+      setShowAuthErrorModal(true);
+    }
+  };
+
+  const handleSignInRedirect = async () => {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    try {
+      await signInWithRedirect(auth, provider);
+    } catch (err: any) {
+      console.error("Sign-in redirect error details:", err);
+      setAuthError(err.message || String(err));
+      setShowAuthErrorModal(true);
     }
   };
 
@@ -258,12 +308,186 @@ export default function App() {
               setSelectedProjectId(id);
               setCurrentPage('project');
             }}
+            setCookieCheckFailed={setCookieCheckFailed}
           />
         )}
         {currentPage === 'project' && selectedProject && (
-          <ProjectView project={selectedProject} onBack={() => setCurrentPage('dashboard')} />
+          <ProjectView 
+            project={selectedProject} 
+            onBack={() => setCurrentPage('dashboard')} 
+            setCookieCheckFailed={setCookieCheckFailed} 
+          />
         )}
       </main>
+
+      {/* Troubleshooting and Redirect Fallback Modal */}
+      <AnimatePresence>
+        {showAuthErrorModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-md z-[9999] flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl relative overflow-hidden border border-gray-100"
+            >
+              <div className="flex items-start gap-4">
+                <div className="bg-amber-100 p-3 rounded-full text-amber-600 shrink-0">
+                  <Info className="w-6 h-6 animate-pulse" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-bold text-gray-900 text-lg leading-snug">
+                    Google Sign-In Help & Troubleshooting
+                  </h3>
+                  <p className="text-gray-500 text-xs mt-1 mb-4 leading-relaxed">
+                    Firebase Authentication handles popup authentication securely, but browser blocks or local environment restrictions can prevent popups from opening.
+                  </p>
+
+                  {/* Raw Error Details */}
+                  {authError && (
+                    <div className="mb-4">
+                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-1">Raw Error Message:</span>
+                      <div className="bg-red-50 text-red-700 text-xs font-mono p-3 rounded-lg border border-red-100 whitespace-pre-wrap max-h-28 overflow-y-auto">
+                        {authError}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Actionable Checklist */}
+                  <div className="space-y-3 mb-6">
+                    <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider block">Localhost Debug Checklist:</span>
+                    
+                    <div className="flex items-start gap-2.5 text-sm">
+                      <div className="bg-[#121316] text-white w-5 h-5 rounded-full flex items-center justify-center text-xs font-mono shrink-0 mt-0.5">1</div>
+                      <div>
+                        <strong className="text-gray-800 font-medium">Bypass with Redirect (Easiest)</strong>
+                        <p className="text-gray-500 text-xs mt-0.5 leading-relaxed">Click the button below to sign in using full-page redirection instead of a popup window. This completely bypasses popup blockers!</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2.5 text-sm">
+                      <div className="bg-[#121316] text-white w-5 h-5 rounded-full flex items-center justify-center text-xs font-mono shrink-0 mt-0.5">2</div>
+                      <div>
+                        <strong className="text-gray-800 font-medium">Enable Browser Popups</strong>
+                        <p className="text-gray-500 text-xs mt-0.5 leading-relaxed">Look at the right side of your browser address bar for a "Popup blocked" icon. Click it and choose "Always allow popups from localhost".</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2.5 text-sm">
+                      <div className="bg-[#121316] text-white w-5 h-5 rounded-full flex items-center justify-center text-xs font-mono shrink-0 mt-0.5">3</div>
+                      <div>
+                        <strong className="text-gray-800 font-medium">Add Localhost as Authorized Domain</strong>
+                        <p className="text-gray-500 text-xs mt-0.5 leading-relaxed">In your Firebase Console, navigate to <strong className="text-gray-700">Authentication &gt; Settings &gt; Authorized domains</strong> and ensure <code className="bg-gray-100 text-gray-800 px-1 rounded font-mono text-xs">localhost</code> is listed.</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2.5 text-sm">
+                      <div className="bg-[#121316] text-white w-5 h-5 rounded-full flex items-center justify-center text-xs font-mono shrink-0 mt-0.5">4</div>
+                      <div>
+                        <strong className="text-gray-800 font-medium">Enable Google Provider</strong>
+                        <p className="text-gray-500 text-xs mt-0.5 leading-relaxed">Confirm Google is enabled as a Provider under <strong className="text-gray-700">Authentication &gt; Sign-in method</strong> in your Firebase project.</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex flex-col sm:flex-row gap-2 mt-4 pt-4 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAuthErrorModal(false);
+                        handleSignInRedirect();
+                      }}
+                      className="flex-1 bg-black text-white hover:opacity-90 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center gap-2 cursor-pointer transition-opacity"
+                    >
+                      Use Redirect Login
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAuthErrorModal(false)}
+                      className="border border-gray-200 hover:bg-gray-50 text-gray-600 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center cursor-pointer transition-colors"
+                    >
+                      Dismiss / Retry Popup
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Cookie / Sandbox Blocker Guidance Modal */}
+      <AnimatePresence>
+        {cookieCheckFailed && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/70 backdrop-blur-md z-[99999] flex items-center justify-center p-4 text-left"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl relative overflow-hidden border border-amber-100"
+            >
+              {/* Top Amber Accented Info/Warning Badge */}
+              <div className="flex items-start gap-4 mb-6">
+                <div className="bg-amber-100 p-3 rounded-full text-amber-600 shrink-0">
+                  <Upload className="w-6 h-6 animate-pulse" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-sans font-bold text-gray-900 text-base leading-snug">
+                    Iframe Security Cookie Blocked
+                  </h3>
+                  <p className="text-gray-500 text-xs mt-1 leading-relaxed">
+                    The AI Studio developmental preview relies on cookies to secure your backend uploads and dynamic chat channels.
+                  </p>
+                </div>
+              </div>
+
+              {/* Core issue details */}
+              <div className="bg-amber-50/40 border border-amber-100 rounded-2xl p-4 mb-6">
+                <h4 className="font-bold text-amber-800 text-[10px] uppercase tracking-wider mb-2">Why am I seeing this?</h4>
+                <p className="text-gray-600 text-xs leading-relaxed mb-3">
+                  Modern browsers (Safari, Firefox, Brave, Chrome Incognito) automatically block sandbox third-party cookies inside embedded iframes.
+                </p>
+                <h4 className="font-bold text-amber-800 text-[10px] uppercase tracking-wider mb-2">Instant Walkthrough:</h4>
+                <ol className="list-decimal pl-4 text-gray-600 text-xs space-y-1">
+                  <li>Click <strong>Open app in new tab</strong> below.</li>
+                  <li>In the direct view window, click standard prompt authorization if requested.</li>
+                  <li>Upload files and run conversations with zero cookie constraints!</li>
+                </ol>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-col gap-2">
+                <a
+                  href={window.location.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full bg-amber-600 hover:bg-amber-700 text-white py-3 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-lg shadow-amber-600/10 text-center"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  OPEN APP IN NEW TAB
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setCookieCheckFailed(false)}
+                  className="w-full border border-gray-200 hover:bg-gray-50 text-gray-600 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center cursor-pointer transition-colors"
+                >
+                  Dismiss / Standard CAD schematic
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -356,10 +580,11 @@ function LandingPage({ onGetStarted, user }: { onGetStarted: () => void, user: F
   );
 }
 
-function Dashboard({ projects, onProjectAdded, onSelectProject }: { 
+function Dashboard({ projects, onProjectAdded, onSelectProject, setCookieCheckFailed }: { 
   projects: Project[], 
   onProjectAdded: (p: Project) => void,
-  onSelectProject: (id: string) => void
+  onSelectProject: (id: string) => void,
+  setCookieCheckFailed?: (val: boolean) => void
 }) {
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -388,6 +613,11 @@ function Dashboard({ projects, onProjectAdded, onSelectProject }: {
         let errorMsg = 'Upload failed';
         const errorText = await resp.text();
         
+        if (isCookieCheckHtml(errorText)) {
+          setCookieCheckFailed?.(true);
+          throw new Error('Your browser is blocking the security cookie required by the AI Studio preview environment. Please open the app in a new tab to bypass this.');
+        }
+        
         // Special handling for infrastructure 413 errors (Proxy limit)
         if (resp.status === 413 || errorText.includes('413 Request Entity Too Large')) {
            errorMsg = 'File is too large for the network proxy (Max 50MB). Please try a smaller IFC file.';
@@ -408,10 +638,16 @@ function Dashboard({ projects, onProjectAdded, onSelectProject }: {
       }
 
       let data;
+      const respText = await resp.text();
+      if (isCookieCheckHtml(respText)) {
+        setCookieCheckFailed?.(true);
+        throw new Error('Your browser is blocking the security cookie required by the AI Studio preview environment. Please open the app in a new tab.');
+      }
       try {
-        data = await resp.json();
-      } catch (e) {
-        throw new Error('Failed to parse upload response. The server may be under heavy load.');
+        data = JSON.parse(respText);
+      } catch (e: any) {
+        console.error("Failed to parse upload response JSON. Raw text:", respText, e);
+        throw new Error(`Failed to parse upload response: ${e?.message || 'Invalid JSON format'}. Response started with: "${respText.slice(0, 150)}"`);
       }
       
       // Save project properties to Firestore under /projects/{projectId}
@@ -527,17 +763,45 @@ import { OrbitControls, PerspectiveCamera, Grid, Stars, Center } from '@react-th
 import { IFCLoader } from 'web-ifc-three/IFCLoader';
 import * as THREE from 'three';
 
-function BIMPreview({ project }: { project: Project }) {
+function BIMPreview({ project, setCookieCheckFailed }: { project: Project; setCookieCheckFailed?: (val: boolean) => void }) {
   const [model, setModel] = useState<THREE.Object3D | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [fileExists, setFileExists] = useState<boolean | null>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    async function loadModel() {
+    async function checkAndLoadModel() {
       setIsLoading(true);
       setLoadError(null);
+      
       try {
+        console.log(`Checking if IFC model file exists for project: ${project.id}`);
+        const checkResp = await fetch(`/api/projects/${project.id}/file-exists`);
+        const checkText = await checkResp.text();
+        
+        if (isCookieCheckHtml(checkText)) {
+          setCookieCheckFailed?.(true);
+          throw new Error("Your browser is blocking the security cookie required by the AI Studio preview environment. Please open the app in a new tab to bypass this.");
+        }
+        
+        if (!checkResp.ok) {
+          throw new Error("Unable to check project status on server.");
+        }
+        const checkData = JSON.parse(checkText);
+        
+        if (!active) return;
+        
+        if (!checkData.exists) {
+          setFileExists(false);
+          setLoadError("Fidelity 3D cache cleared (Server restarted). Below you can re-upload your IFC file to restore 3D rendering!");
+          setIsLoading(false);
+          return;
+        }
+        
+        setFileExists(true);
         const loader = new IFCLoader();
         // Serve web-ifc.wasm locally from the app server to prevent third-party constraints, CORS, or sandbox errors
         loader.ifcManager.setWasmPath(window.location.origin + '/');
@@ -559,6 +823,7 @@ function BIMPreview({ project }: { project: Project }) {
                 }
               });
               setModel(ifcModel);
+              setLoadError(null);
               setIsLoading(false);
             }
           },
@@ -571,18 +836,59 @@ function BIMPreview({ project }: { project: Project }) {
             }
           }
         );
-      } catch (err) {
-        console.error("Loader Init Error:", err);
+      } catch (err: any) {
+        console.error("Loader/Check Error:", err);
         if (active) {
-          setLoadError("3D Engine init failed.");
+          setLoadError(err?.message || "3D Engine init failed.");
           setIsLoading(false);
         }
       }
     }
 
-    loadModel();
+    checkAndLoadModel();
     return () => { active = false; };
-  }, [project.id]);
+  }, [project.id, fileExists]);
+
+  const handleRestoreFile = async (file: File) => {
+    if (!file) return;
+    setIsRestoring(true);
+    setRestoreProgress("Uploading file...");
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const resp = await fetch(`/api/projects/${project.id}/restore`, {
+        method: 'POST',
+        body: formData,
+      });
+      
+      const respText = await resp.text();
+      if (isCookieCheckHtml(respText)) {
+        setCookieCheckFailed?.(true);
+        throw new Error("Your browser is blocking the security cookie required by the AI Studio preview environment. Please open the app in a new tab.");
+      }
+      
+      if (!resp.ok) {
+        throw new Error(`Upload failed: ${resp.statusText}`);
+      }
+      
+      const data = JSON.parse(respText);
+      if (data.success) {
+        setRestoreProgress("Loading 3D View...");
+        setFileExists(true);
+        setLoadError(null);
+      } else {
+        throw new Error("Unable to restore model file.");
+      }
+    } catch (err: any) {
+      console.error("Restore failed:", err);
+      setLoadError(`Re-upload failed: ${err.message || err}`);
+    } finally {
+      setIsRestoring(false);
+      setRestoreProgress(null);
+    }
+  };
 
   const floors = project.summary.structure.floors;
   const elementDetails = project.summary.elements.details || [];
@@ -692,11 +998,11 @@ function BIMPreview({ project }: { project: Project }) {
       <div className="absolute bottom-4 left-4 z-10 flex flex-col gap-2">
         {isLoading && (
           <div className="bg-white/90 backdrop-blur-md border border-blue-100 rounded-full px-4 py-1.5 flex items-center gap-2 text-[10px] font-bold text-blue-600 shadow-lg">
-             <Loader2 className="w-3 h-3 animate-spin" />
+             <Loader2 className="w-3.5 h-3.5 animate-spin" />
              PARSING ACCURATE GEOMETRY...
           </div>
         )}
-        {loadError && (
+        {loadError && !isRestoring && (
           <div className="bg-orange-50 border border-orange-100 rounded-lg px-3 py-1.5 text-[9px] font-bold text-orange-600 shadow-md">
              {loadError}
           </div>
@@ -708,11 +1014,53 @@ function BIMPreview({ project }: { project: Project }) {
           {model ? "BIM Fidelity Render: High" : "BIM Fidelity Render: Schematic"}
         </div>
       </div>
+
+      {/* Embedded Restore Upload Component */}
+      {fileExists === false && (
+        <div className="absolute inset-x-4 bottom-4 z-20 bg-white/95 backdrop-blur-md rounded-2xl border border-amber-200 p-4 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-bottom-5 duration-300">
+          <div className="flex items-center gap-3 text-left">
+            <div className="bg-amber-100 text-amber-600 p-2.5 rounded-full shrink-0">
+              <Upload className="w-5 h-5 animate-bounce" />
+            </div>
+            <div>
+              <h4 className="font-bold text-gray-900 text-xs leading-tight">3D CAD Model Unavailable</h4>
+              <p className="text-gray-500 text-[10px] mt-0.5 leading-normal max-w-lg">
+                The server was restarted. The chat records and model statistics remain fully operational! To restore the high-fidelity 3D model, click here to upload the original <span className="font-mono bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded text-[9px] font-bold">{project.name}</span> file.
+              </p>
+            </div>
+          </div>
+          <div className="shrink-0 flex items-center gap-2 w-full md:w-auto">
+            <label className="w-full md:w-auto bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] px-4 py-2.5 rounded-xl cursor-pointer transition-all inline-flex items-center justify-center gap-1.5 shadow-md shadow-amber-600/10">
+              {isRestoring ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {restoreProgress || 'UPLOADING...'}
+                </>
+              ) : (
+                <>
+                  <Upload className="w-3 h-3" />
+                  RESTORE 3D VIEW
+                </>
+              )}
+              <input 
+                type="file" 
+                accept=".ifc" 
+                disabled={isRestoring} 
+                className="hidden" 
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleRestoreFile(file);
+                }}
+              />
+            </label>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function ProjectView({ project, onBack }: { project: Project, onBack: () => void }) {
+function ProjectView({ project, onBack, setCookieCheckFailed }: { project: Project, onBack: () => void, setCookieCheckFailed?: (val: boolean) => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -746,17 +1094,17 @@ function ProjectView({ project, onBack }: { project: Project, onBack: () => void
         }),
       });
 
-      if (!resp.ok) {
-        const errorText = await resp.text();
-        throw new Error(`Chat error: ${resp.status} - ${errorText.slice(0, 100)}`);
+      const respText = await resp.text();
+      if (isCookieCheckHtml(respText)) {
+        setCookieCheckFailed?.(true);
+        throw new Error("Your browser is blocking the security cookie required by the AI Studio preview environment. Please open the app in a new tab to bypass this.");
       }
 
-      let data;
-      try {
-        data = await resp.json();
-      } catch (e) {
-        throw new Error('Failed to parse chat response.');
+      if (!resp.ok) {
+        throw new Error(`Chat error: ${resp.status} - ${respText.slice(0, 100)}`);
       }
+
+      const data = JSON.parse(respText);
       setMessages(prev => [...prev, { role: 'model', parts: [{ text: data.text }] }]);
     } catch (err: any) {
        console.error(err);
@@ -827,7 +1175,7 @@ function ProjectView({ project, onBack }: { project: Project, onBack: () => void
         {/* 3D Viewer / Data Panel */}
         {viewMode === 'split' && (
           <div className="flex-1 min-h-[300px] p-6 bg-gray-50 flex flex-col gap-4">
-             <BIMPreview project={project} />
+             <BIMPreview project={project} setCookieCheckFailed={setCookieCheckFailed} />
           </div>
         )}
 
