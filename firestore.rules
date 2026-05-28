@@ -60,7 +60,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
       allow create: if isSignedIn() && isValidId(projectId) && incoming().ownerId == request.auth.uid && isValidProject(incoming());
       allow update: if isSignedIn() && isValidId(projectId) && existing().ownerId == request.auth.uid && incoming().ownerId == request.auth.uid && isValidProject(incoming()) && incoming().id == existing().id && incoming().uploadedAt == existing().uploadedAt;
-      allow delete: if isSignedIn() && isValidId(projectId) && existing().ownerId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(projectId) && (!('ownerId' in existing()) || existing().ownerId == request.auth.uid);
     }
   }
 }

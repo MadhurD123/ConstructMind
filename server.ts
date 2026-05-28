@@ -264,6 +264,29 @@ app.get('/api/projects/:id/file', (req, res) => {
   res.sendFile(filePath);
 });
 
+app.delete('/api/projects/:id', async (req, res) => {
+  const projectId = req.params.id;
+  console.log(`Received request to delete project: ${projectId}`);
+  try {
+    const project = projects[projectId];
+    const filePath = project?.filePath || path.join(UPLOADS_DIR, `${projectId}.ifc`);
+    
+    if (fs.existsSync(filePath)) {
+      await fs.promises.unlink(filePath);
+      console.log(`Deleted IFC file from disk: ${filePath}`);
+    }
+    
+    if (projects[projectId]) {
+      delete projects[projectId];
+    }
+    
+    res.json({ success: true, message: 'Project file deleted from server successfully' });
+  } catch (error: any) {
+    console.error(`Error deleting project ${projectId} on server:`, error);
+    res.status(500).json({ error: error.message || 'Failed to delete project on the server' });
+  }
+});
+
 // Find and serve local web-ifc.wasm file for 3D model loading
 let foundWasmPath = '';
 const possibleWasmPaths = [
@@ -300,16 +323,52 @@ app.post('/api/chat', async (req, res) => {
      return res.status(404).json({ error: 'Project data summary not found' });
   }
 
+  // Derive the active rooms for this project exactly matching the 3D viewer list
+  let activeRooms = [];
+  const isWellness = projectName.toLowerCase().includes('wellness') || projectName.toLowerCase().includes('sama');
+  if (isWellness) {
+    activeRooms = [
+      { id: 'lobby', name: 'Reception Lobby', desc: 'Secure entrance foyer with guest lounge and front welcoming counter.' },
+      { id: 'conf', name: 'Conference Boardroom', desc: 'Central boardroom housing executive tables and dynamic media displays.' },
+      { id: 'work', name: 'Open Workspaces', desc: 'High capacity operations room with four modular developer workstations.' },
+      { id: 'exec', name: 'Executive Suite', desc: 'Private leadership office section with desks and document storage.' },
+      { id: 'lounge', name: 'Pantry & Coffee Lounge', desc: 'Employee refreshment space featuring high bar counters and stools.' }
+    ];
+  } else {
+    // Extract dynamic spaces from elements details (IFCSPACE)
+    const spaces = projectSummary?.elements?.details?.filter((d: any) => d.type === 'Spaces') || [];
+    if (spaces.length === 0) {
+      activeRooms = [
+        { id: 'living', name: 'Living Room', desc: 'Elegant lounge and leisure space with cozy family sofas.' },
+        { id: 'bedroom', name: 'Master Bedroom', desc: 'Cozy private master bedroom complete with king bed.' },
+        { id: 'kitchen', name: 'Modern Kitchen', desc: 'Sleek kitchen island dining setup with designer stools.' },
+        { id: 'bathroom', name: 'Spa Bathroom', desc: 'Luxurious bathroom sanctuary containing premium bathtub and vanity.' },
+        { id: 'office', name: 'Home Office', desc: 'Productive workstation room with custom flat screen desktops.' },
+        { id: 'entrance', name: 'Entrance Hall', desc: 'Welcoming front gallery corridor leading into the main halls.' }
+      ];
+    } else {
+      activeRooms = spaces.map((sp: any) => ({
+        id: String(sp.id),
+        name: sp.name || `Space ${sp.id}`,
+        desc: `Room space extracted directly from IFC details.`
+      }));
+    }
+  }
+
   const systemInstruction = `
     You are ConstructMind AI, an expert BIM and Construction assistant.
-    The user has uploaded a building project: "${projectName}".
+    The user is viewing a building project: "${projectName}".
     
     Building Data Summary:
     ${JSON.stringify(projectSummary, null, 2)}
 
+    Active Rooms/Spaces in this Project model (synchronized with the 3D viewer):
+    ${JSON.stringify(activeRooms, null, 2)}
+
     Your role and response rules:
     - ALWAYS keep responses extremely short, concise, and direct. No fluff.
-    - For SIMPLE questions (e.g., counts, project name, list of elements, basic definitions), you MUST reply in a SINGLE LINE.
+    - If the user asks about individual rooms, their features, or what rooms are in the project, explain using the "Active Rooms/Spaces" listed above (e.g. Living Room, Master Bedroom, Modern Kitchen, Spa Bathroom, Home Office, Entrance Hall, etc.) to match what they see in the 3D dropdown exactly.
+    - For SIMPLE questions (e.g., counts, project name, list of elements, basic definitions, rooms list), you MUST reply in a SINGLE LINE or a short bullet-pointed list.
     - For COMPLEX questions (e.g., structural breakdown, detailed design analysis, architectural recommendations), give a BRIEF answer of at most 2 to 3 sentences.
     - If data is missing, state it directly in a few words rather than explaining in detail.
   `;
