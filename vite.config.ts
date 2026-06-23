@@ -13,7 +13,12 @@ export default defineConfig(({mode}) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        'fs': path.resolve(__dirname, 'src/fs-mock.ts'),
+        'path': path.resolve(__dirname, 'src/fs-mock.ts'),
       },
+    },
+    optimizeDeps: {
+      include: ['web-ifc', 'web-ifc-three']
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

@@ -61,6 +61,30 @@ service cloud.firestore {
       allow create: if isSignedIn() && isValidId(projectId) && incoming().ownerId == request.auth.uid && isValidProject(incoming());
       allow update: if isSignedIn() && isValidId(projectId) && existing().ownerId == request.auth.uid && incoming().ownerId == request.auth.uid && isValidProject(incoming()) && incoming().id == existing().id && incoming().uploadedAt == existing().uploadedAt;
       allow delete: if isSignedIn() && isValidId(projectId) && (!('ownerId' in existing()) || existing().ownerId == request.auth.uid);
+
+      match /energyAnalysis/{analysisId} {
+        allow get: if isSignedIn() && isValidId(projectId) && isValidId(analysisId) 
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+        allow list: if isSignedIn() && isValidId(projectId) && resource.data.ownerId == request.auth.uid;
+        allow create, update: if isSignedIn() && isValidId(projectId) && isValidId(analysisId) 
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid 
+          && incoming().ownerId == request.auth.uid
+          && incoming().projectId == projectId;
+        allow delete: if isSignedIn() && isValidId(projectId) && isValidId(analysisId) 
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+      }
+
+      match /reports/{reportId} {
+        allow get: if isSignedIn() && isValidId(projectId) && isValidId(reportId) 
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+        allow list: if isSignedIn() && isValidId(projectId) && resource.data.ownerId == request.auth.uid;
+        allow create, update: if isSignedIn() && isValidId(projectId) && isValidId(reportId) 
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid 
+          && incoming().ownerId == request.auth.uid
+          && incoming().projectId == projectId;
+        allow delete: if isSignedIn() && isValidId(projectId) && isValidId(reportId) 
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+      }
     }
   }
 }

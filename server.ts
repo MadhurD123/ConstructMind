@@ -12,12 +12,17 @@ import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import { createRequire } from 'module';
+import { EnergyAnalyzerService } from './server/EnergyAnalyzerService';
+import { ReportGeneratorService } from './server/ReportGeneratorService';
 
-const require = createRequire(import.meta.url);
-const IFC = require('web-ifc');
+// Support both CommonJS (production bundled output) and ESM (development with tsx)
+const customRequire = typeof require !== 'undefined'
+  ? require
+  : createRequire(import.meta.url);
+const IFC = customRequire('web-ifc');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 // Multer setup for file uploads
 const upload = multer({ 
@@ -412,6 +417,115 @@ app.post('/api/chat', async (req, res) => {
     console.error('Gemini API error detail:', error);
     res.status(500).json({ error: `Gemini API error: ${error.message || 'Unknown error'}` });
   }
+});
+
+// Lazy loader and restorer for project details
+async function getOrRestoreProject(projectId: string, name?: string) {
+  let project = projects[projectId];
+  if (!project) {
+    const filePath = path.join(UPLOADS_DIR, `${projectId}.ifc`);
+    if (fs.existsSync(filePath)) {
+      console.log(`[BIM] Lazily parsing and restoring project summary from disk: ${projectId}`);
+      try {
+        const buffer = await fs.promises.readFile(filePath);
+        const summary = await parseIFC(buffer);
+        project = {
+          id: projectId,
+          name: name || `${projectId}.ifc`,
+          summary,
+          filePath,
+          uploadedAt: new Date().toISOString()
+        };
+        projects[projectId] = project;
+      } catch (err) {
+        console.error(`[BIM] Failed to restore project ${projectId}:`, err);
+      }
+    }
+  }
+  return project;
+}
+
+// Energy Efficiency Analysis Endpoint
+app.post('/api/projects/:id/energy-analysis', async (req, res) => {
+  const projectId = req.params.id;
+  const { name } = req.body;
+  console.log(`[Energy] Received energy-analysis request for project: ${projectId}`);
+  try {
+    const project = await getOrRestoreProject(projectId, name);
+    if (!project || !project.summary) {
+      return res.status(404).json({ error: 'Project BIM data not found on the server. Please ensure the model file is uploaded.' });
+    }
+    
+    if (project.summary.error) {
+      return res.status(422).json({ error: `Cannot analyze building: ${project.summary.error}` });
+    }
+
+    const analysis = await EnergyAnalyzerService.analyzeProject(project.summary, project.name);
+    res.json(analysis);
+  } catch (error: any) {
+    console.error("[Energy] Energy Analysis endpoint error:", error);
+    res.status(500).json({ error: error.message || "Internal server error during energy analysis." });
+  }
+});
+
+// PDF Report Generator Endpoint
+app.post('/api/projects/:id/generate-report', async (req, res) => {
+  const projectId = req.params.id;
+  const { name, energyAnalysis } = req.body;
+  console.log(`[Report] Received PDF generate request for project: ${projectId}`);
+  try {
+    const project = await getOrRestoreProject(projectId, name);
+    if (!project || !project.summary) {
+      return res.status(404).json({ error: 'Project BIM data not found on the server. Please ensure the model file is uploaded.' });
+    }
+
+    if (project.summary.error) {
+      return res.status(422).json({ error: `Cannot generate report for invalid IFC: ${project.summary.error}` });
+    }
+
+    // If energyAnalysis was not passed in body, generate it on the fly
+    let finalAnalysis = energyAnalysis;
+    if (!finalAnalysis) {
+      console.log(`[Report] No energy analysis provided for report, running inline analyzer...`);
+      finalAnalysis = await EnergyAnalyzerService.analyzeProject(project.summary, project.name);
+    }
+
+    const pdfBuffer = await ReportGeneratorService.generateReport(project, finalAnalysis);
+    
+    // Save report PDF locally to allow downloads
+    const reportPath = path.join(UPLOADS_DIR, `${projectId}_report.pdf`);
+    await fs.promises.writeFile(reportPath, pdfBuffer);
+    console.log(`[Report] PDF saved to disk at: ${reportPath}`);
+
+    const reportId = uuidv4();
+    res.json({
+      success: true,
+      reportId,
+      reportUrl: `/api/projects/${projectId}/report`,
+      reportSize: pdfBuffer.length,
+      reportStatus: 'Completed',
+      generatedAt: new Date().toISOString()
+    });
+  } catch (error: any) {
+    console.error("[Report] Generate Report endpoint error:", error);
+    res.status(500).json({ error: error.message || "Internal server error during PDF report generation." });
+  }
+});
+
+// Download PDF Report Endpoint
+app.get('/api/projects/:id/report', (req, res) => {
+  const projectId = req.params.id;
+  const reportPath = path.join(UPLOADS_DIR, `${projectId}_report.pdf`);
+  const project = projects[projectId];
+  const downloadName = project ? `${project.name.replace(/\.[^/.]+$/, "")}_Performance_Report.pdf` : `BIM_Performance_Report_${projectId}.pdf`;
+
+  if (!fs.existsSync(reportPath)) {
+    return res.status(404).json({ error: 'Generated PDF report not found. Please click Generate Report first.' });
+  }
+
+  res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.sendFile(reportPath);
 });
 
 async function startServer() {

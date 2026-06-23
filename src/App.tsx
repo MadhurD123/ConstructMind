@@ -3,10 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
+import React, { useState, useRef, useEffect, useMemo, Component } from 'react';
 import { 
-  getAuth, 
   signInWithPopup, 
   GoogleAuthProvider, 
   signOut, 
@@ -16,7 +14,6 @@ import {
   getRedirectResult
 } from 'firebase/auth';
 import { 
-  getFirestore, 
   doc, 
   setDoc, 
   getDoc,
@@ -28,6 +25,7 @@ import {
   getDocFromServer,
   deleteDoc
 } from 'firebase/firestore';
+import { db, auth, testConnection } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
 import { 
   Building2, 
@@ -54,27 +52,37 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { EnergyAnalysisView } from './components/EnergyAnalysisView';
+import { ReportsView } from './components/ReportsView';
+import { Canvas, useThree } from '@react-three/fiber';
+import { OrbitControls, PerspectiveCamera, Grid, Stars, Center, Html } from '@react-three/drei';
+import { IFCLoader } from 'web-ifc-three';
+import * as THREE from 'three';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// --- Firebase Initialization ---
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
-
-// Connection test on app start
-async function testConnection() {
+// Safe global overrides for iframe environments to prevent sandbox crashes
+if (typeof window !== 'undefined') {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
-    }
+    window.alert = function(message) {
+      console.warn("Blocked native alert() inside sandboxed iframe:", message);
+    };
+    window.confirm = function(message) {
+      console.warn("Blocked native confirm() inside sandboxed iframe:", message);
+      return true;
+    };
+    window.prompt = function(message) {
+      console.warn("Blocked native prompt() inside sandboxed iframe:", message);
+      return null;
+    };
+  } catch (e) {
+    console.warn("Failed to set window global overrides:", e);
   }
 }
-testConnection();
+
+
 
 enum OperationType {
   CREATE = 'create',
@@ -158,6 +166,7 @@ export default function App() {
 
   // Set up Firebase Auth listener
   useEffect(() => {
+    testConnection();
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setAuthLoading(false);
@@ -222,18 +231,35 @@ export default function App() {
 
   // Handle redirect result on component mount/load
   useEffect(() => {
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result?.user) {
-          console.log("Successful redirect login: ", result.user);
-          setCurrentPage('dashboard');
-        }
-      })
-      .catch((err) => {
-        console.error("Error retrieving redirect result:", err);
-        setAuthError(err.message || String(err));
-        setShowAuthErrorModal(true);
-      });
+    // Skip if running inside an iframe, as getRedirectResult is not supported and throws security errors
+    let isInIframe = false;
+    try {
+      isInIframe = window.self !== window.top;
+    } catch (e) {
+      isInIframe = true;
+    }
+    
+    if (isInIframe) {
+      console.log("Running inside iframe, skipping getRedirectResult.");
+      return;
+    }
+
+    try {
+      getRedirectResult(auth)
+        .then((result) => {
+          if (result?.user) {
+            console.log("Successful redirect login: ", result.user);
+            setCurrentPage('dashboard');
+          }
+        })
+        .catch((err) => {
+          console.error("Error retrieving redirect result:", err);
+          setAuthError(err.message || String(err));
+          setShowAuthErrorModal(true);
+        });
+    } catch (err: any) {
+      console.error("Synchronous error during getRedirectResult:", err);
+    }
   }, []);
 
   // Authentication actions
@@ -712,14 +738,17 @@ function Dashboard({ projects, onProjectAdded, onSelectProject, onDeleteProject,
   setCookieCheckFailed?: (val: boolean) => void
 }) {
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleUpload = async (e: any) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setUploadError(null);
+
     if (file.size > 50 * 1024 * 1024) {
-      alert('File is too large. Maximum size is 50MB due to network constraints.');
+      setUploadError('File is too large. Maximum size is 50MB due to network constraints.');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -808,7 +837,7 @@ function Dashboard({ projects, onProjectAdded, onSelectProject, onDeleteProject,
     } catch (err: any) {
       console.error(err);
       if (fileInputRef.current) fileInputRef.current.value = '';
-      alert(err.message || 'Upload failed. Ensure you select a valid IFC file.');
+      setUploadError(err.message || 'Upload failed. Ensure you select a valid IFC file.');
     } finally {
       setIsUploading(false);
     }
@@ -831,6 +860,18 @@ function Dashboard({ projects, onProjectAdded, onSelectProject, onDeleteProject,
         </button>
         <input type="file" ref={fileInputRef} onChange={handleUpload} className="hidden" accept=".ifc" />
       </div>
+
+      {uploadError && (
+        <div className="mb-6 flex items-start justify-between p-4 bg-red-950/40 border border-red-500/20 text-red-200 rounded-2xl text-xs font-medium backdrop-blur-md animate-fade-in">
+          <div className="flex gap-2 items-center">
+            <span className="text-red-400">⚠️</span>
+            <span>{uploadError}</span>
+          </div>
+          <button onClick={() => setUploadError(null)} className="text-red-400 hover:text-red-200 ml-2 font-bold cursor-pointer">
+            &times;
+          </button>
+        </div>
+      )}
 
       {projects.length === 0 ? (
         <div className="border-2 border-dashed border-zinc-800 bg-zinc-900/10 rounded-3xl p-20 flex flex-col items-center justify-center text-center space-y-4">
@@ -895,11 +936,6 @@ function Dashboard({ projects, onProjectAdded, onSelectProject, onDeleteProject,
     </div>
   );
 }
-
-import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Grid, Stars, Center, Html } from '@react-three/drei';
-import { IFCLoader } from 'web-ifc-three/IFCLoader';
-import * as THREE from 'three';
 
 // --- Helper: CameraRig to smoothly position looking at target ---
 function CameraRig({ viewType, cameraTarget }: { viewType: '3d' | '2d'; cameraTarget: [number, number, number] }) {
@@ -1354,6 +1390,52 @@ interface BIMPreviewProps {
   roomDefinitions: any[];
 }
 
+function checkWebGLSupport() {
+  try {
+    const canvas = document.createElement('canvas');
+    return !!(
+      window.WebGLRenderingContext &&
+      (canvas.getContext('webgl') || canvas.getContext('experimental-webgl'))
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
+class CanvasErrorBoundary extends React.Component<{ children: React.ReactNode; fallback?: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error("Canvas rendering failed:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback || (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center">
+          <div className="max-w-md bg-slate-800/85 border border-red-500/30 rounded-3xl p-8 shadow-2xl backdrop-blur-md">
+            <h3 className="text-xl font-bold text-white mb-2 font-sans">WebGL Canvas Crash</h3>
+            <p className="text-slate-400 text-xs leading-relaxed mb-6 font-sans">
+              Three.js / WebGL encountered a runtime rendering exception. This usually happens when the GPU runs out of memory or context is lost in the iframe.
+            </p>
+            <p className="text-xs text-red-400 font-mono bg-red-950/50 p-3 rounded-lg border border-red-900/30">
+              {this.state.error?.message || "Unknown Canvas Error"}
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function BIMPreview({
   project,
   setCookieCheckFailed,
@@ -1367,6 +1449,8 @@ function BIMPreview({
   setCameraTarget,
   roomDefinitions
 }: BIMPreviewProps) {
+  const [webGlSupported, setWebGlSupported] = useState(() => checkWebGLSupport());
+
   const [model, setModel] = useState<THREE.Object3D | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1385,6 +1469,10 @@ function BIMPreview({
       setLoadError(null);
       
       try {
+        if (!webGlSupported) {
+          throw new Error("WebGL is currently disabled or unsupported in this sandboxed preview context.");
+        }
+
         console.log(`Checking if IFC model file exists for project: ${project.id}`);
         const checkResp = await fetch(`/api/projects/${project.id}/file-exists`);
         const checkText = await checkResp.text();
@@ -1410,6 +1498,7 @@ function BIMPreview({
         
         setFileExists(true);
         const loader = new IFCLoader();
+        loader.ifcManager.useWebWorkers(false);
         loader.ifcManager.setWasmPath(window.location.origin + '/');
         
         loader.load(
@@ -1555,151 +1644,182 @@ function BIMPreview({
           </button>
         </div>
 
-        <Canvas shadows gl={{ antialias: true }} camera={{ position: [15, 15, 15], fov: 42 }}>
-          <OrbitControls 
-            key={`${viewType}-${cameraTarget.join('-')}-${selectedFloorId}-${selectedRoomId}`}
-            target={new THREE.Vector3(...cameraTarget)}
-            makeDefault 
-            enableDamping 
-            dampingFactor={0.05}
-            enableRotate={viewType === '3d'}
-            onStart={() => {
-              isDraggingRef.current = true;
-            }}
-            onEnd={() => {
-              setTimeout(() => {
-                isDraggingRef.current = false;
-              }, 120);
-            }}
-          />
-          
-          <CameraRig viewType={viewType} cameraTarget={cameraTarget} />
-          
-          <ambientLight intensity={0.7} />
-          <directionalLight 
-            position={[30, 45, 30]} 
-            intensity={1.8} 
-            castShadow 
-            shadow-mapSize={[2048, 2048]}
-          />
-          <pointLight position={[-15, 15, -15]} intensity={0.6} />
+        {webGlSupported ? (
+          <CanvasErrorBoundary>
+            <Canvas shadows gl={{ antialias: true }} camera={{ position: [15, 15, 15], fov: 42 }}>
+            <OrbitControls 
+              key={`${viewType}-${cameraTarget.join('-')}-${selectedFloorId}-${selectedRoomId}`}
+              target={new THREE.Vector3(...cameraTarget)}
+              makeDefault 
+              enableDamping 
+              dampingFactor={0.05}
+              enableRotate={viewType === '3d'}
+              onStart={() => {
+                isDraggingRef.current = true;
+              }}
+              onEnd={() => {
+                setTimeout(() => {
+                  isDraggingRef.current = false;
+                }, 120);
+              }}
+            />
+            
+            <CameraRig viewType={viewType} cameraTarget={cameraTarget} />
+            
+            <ambientLight intensity={0.7} />
+            <directionalLight 
+              position={[30, 45, 30]} 
+              intensity={1.8} 
+              castShadow 
+              shadow-mapSize={[2048, 2048]}
+            />
+            <pointLight position={[-15, 15, -15]} intensity={0.6} />
 
-          {/* Dynamic centering indicator pin */}
-          <TargetIndicator position={cameraTarget} />
-          
-          {/* Environment - Light Kraft Base GridSlab */}
-          <mesh 
-            rotation={[-Math.PI / 2, 0, 0]} 
-            position={[0, -0.1, 0]} 
-            receiveShadow
-            onPointerDown={(e) => {
+            {/* Dynamic centering indicator pin */}
+            <TargetIndicator position={cameraTarget} />
+            
+            {/* Environment - Light Kraft Base GridSlab */}
+            <mesh 
+              rotation={[-Math.PI / 2, 0, 0]} 
+              position={[0, -0.1, 0]} 
+              receiveShadow
+              onPointerDown={(e) => {
+                if (e.button === 1 || e.nativeEvent?.button === 1) {
+                  e.stopPropagation();
+                  if (e.point) {
+                    setCameraTarget([e.point.x, e.point.y, e.point.z]);
+                  }
+                }
+              }}
+            >
+              <boxGeometry args={[120, 120, 0.2]} />
+              <meshStandardMaterial color="#f8fafc" roughness={0.8} />
+            </mesh>
+            
+            <Grid 
+              infiniteGrid 
+              fadeDistance={80} 
+              cellColor="#cbd5e1" 
+              sectionColor="#94a3b8" 
+              cellSize={1} 
+              sectionSize={10}
+            />
+
+            <group onPointerDown={(e) => {
               if (e.button === 1 || e.nativeEvent?.button === 1) {
                 e.stopPropagation();
                 if (e.point) {
                   setCameraTarget([e.point.x, e.point.y, e.point.z]);
                 }
               }
-            }}
-          >
-            <boxGeometry args={[120, 120, 0.2]} />
-            <meshStandardMaterial color="#f8fafc" roughness={0.8} />
-          </mesh>
-          
-          <Grid 
-            infiniteGrid 
-            fadeDistance={80} 
-            cellColor="#cbd5e1" 
-            sectionColor="#94a3b8" 
-            cellSize={1} 
-            sectionSize={10}
-          />
+            }}>
+              {selectedRoomId !== 'all' ? (
+                /* Only render the isolated room, perfectly centered with no building overlap! */
+                <Center top>
+                  <IsolatedRoom3D 
+                    room={roomDefinitions.find(r => r.id === selectedRoomId)} 
+                    elev={0} 
+                    storyHeight={storyHeight} 
+                  />
+                </Center>
+              ) : model ? (
+                /* loaded full-level IFC rendering */
+                <Center top>
+                  <primitive object={model} />
+                </Center>
+              ) : (
+                /* Fallback full building visualization */
+                <>
+                  {floors.length > 0 ? (
+                    floors.map((floor: any, i: number) => {
+                      const elev = floor.elevation || i * storyHeight;
+                      const isCurrentFloorExempt = selectedFloorId !== 'all' && selectedFloorId !== floor.id;
+                      
+                      if (isCurrentFloorExempt) return null;
 
-          <group onPointerDown={(e) => {
-            if (e.button === 1 || e.nativeEvent?.button === 1) {
-              e.stopPropagation();
-              if (e.point) {
-                setCameraTarget([e.point.x, e.point.y, e.point.z]);
-              }
-            }
-          }}>
-            {selectedRoomId !== 'all' ? (
-              /* Only render the isolated room, perfectly centered with no building overlap! */
-              <Center top>
-                <IsolatedRoom3D 
-                  room={roomDefinitions.find(r => r.id === selectedRoomId)} 
-                  elev={0} 
-                  storyHeight={storyHeight} 
-                />
-              </Center>
-            ) : model ? (
-              /* loaded full-level IFC rendering */
-              <Center top>
-                <primitive object={model} />
-              </Center>
-            ) : (
-              /* Fallback full building visualization */
-              <>
-                {floors.length > 0 ? (
-                  floors.map((floor: any, i: number) => {
-                    const elev = floor.elevation || i * storyHeight;
-                    const isCurrentFloorExempt = selectedFloorId !== 'all' && selectedFloorId !== floor.id;
-                    
-                    if (isCurrentFloorExempt) return null;
+                      return (
+                        <group 
+                          key={floor.id} 
+                          position={[0, elev, 0]}
+                        >
+                          {/* Dark Slab base */}
+                          <mesh position={[0, -0.05, 0]} receiveShadow castShadow>
+                            <boxGeometry args={[houseWidth, 0.12, houseDepth]} />
+                            <meshStandardMaterial color="#1c1917" roughness={0.6} />
+                          </mesh>
 
-                    return (
-                      <group 
-                        key={floor.id} 
-                        position={[0, elev, 0]}
-                      >
-                        {/* Dark Slab base */}
-                        <mesh position={[0, -0.05, 0]} receiveShadow castShadow>
-                          <boxGeometry args={[houseWidth, 0.12, houseDepth]} />
-                          <meshStandardMaterial color="#1c1917" roughness={0.6} />
-                        </mesh>
+                          {/* Translucent industrial structural columns */}
+                          <group position={[0, storyHeight / 2, 0]}>
+                            <mesh position={[0, 0, houseDepth / 2]} castShadow receiveShadow>
+                              <boxGeometry args={[houseWidth, storyHeight, 0.12]} />
+                              <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
+                            </mesh>
+                            <mesh position={[0, 0, -houseDepth / 2]} castShadow receiveShadow>
+                              <boxGeometry args={[houseWidth, storyHeight, 0.12]} />
+                              <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
+                            </mesh>
+                            <mesh position={[houseWidth / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]} castShadow receiveShadow>
+                              <boxGeometry args={[houseDepth, storyHeight, 0.12]} />
+                              <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
+                            </mesh>
+                            <mesh position={[-houseWidth / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]} castShadow receiveShadow>
+                              <boxGeometry args={[houseDepth, storyHeight, 0.12]} />
+                              <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
+                            </mesh>
+                          </group>
 
-                        {/* Translucent industrial structural columns */}
-                        <group position={[0, storyHeight / 2, 0]}>
-                          <mesh position={[0, 0, houseDepth / 2]} castShadow receiveShadow>
-                            <boxGeometry args={[houseWidth, storyHeight, 0.12]} />
-                            <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
-                          </mesh>
-                          <mesh position={[0, 0, -houseDepth / 2]} castShadow receiveShadow>
-                            <boxGeometry args={[houseWidth, storyHeight, 0.12]} />
-                            <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
-                          </mesh>
-                          <mesh position={[houseWidth / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]} castShadow receiveShadow>
-                            <boxGeometry args={[houseDepth, storyHeight, 0.12]} />
-                            <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
-                          </mesh>
-                          <mesh position={[-houseWidth / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]} castShadow receiveShadow>
-                            <boxGeometry args={[houseDepth, storyHeight, 0.12]} />
-                            <meshStandardMaterial color="#27272a" transparent opacity={0.6} roughness={0.5} />
-                          </mesh>
+                          {/* Roof structure mapping only on highest floor if multiple exist */}
+                          {i === floors.length - 1 && selectedFloorId === 'all' && (
+                            <mesh position={[0, storyHeight, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+                              <coneGeometry args={[houseWidth * 0.75, storyHeight - 1, 4]} />
+                              <meshStandardMaterial color="#44403c" roughness={0.8} />
+                            </mesh>
+                          )}
                         </group>
-
-                        {/* Roof structure mapping only on highest floor if multiple exist */}
-                        {i === floors.length - 1 && selectedFloorId === 'all' && (
-                          <mesh position={[0, storyHeight, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
-                            <coneGeometry args={[houseWidth * 0.75, storyHeight - 1, 4]} />
-                            <meshStandardMaterial color="#44403c" roughness={0.8} />
-                          </mesh>
-                        )}
-                      </group>
-                    );
-                  })
-                ) : (
-                  /* Base structure fallback */
-                  <Center top>
-                    <mesh castShadow>
-                      <boxGeometry args={[houseWidth, storyHeight, houseDepth]} />
-                      <meshStandardMaterial color="#27272a" roughness={0.6} />
-                    </mesh>
-                  </Center>
-                )}
-              </>
-            )}
-          </group>
-        </Canvas>
+                      );
+                    })
+                  ) : (
+                    /* Base structure fallback */
+                    <Center top>
+                      <mesh castShadow>
+                        <boxGeometry args={[houseWidth, storyHeight, houseDepth]} />
+                        <meshStandardMaterial color="#27272a" roughness={0.6} />
+                      </mesh>
+                    </Center>
+                  )}
+                </>
+              )}
+            </group>
+          </Canvas>
+         </CanvasErrorBoundary>
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center">
+            <div className="max-w-md bg-slate-800/85 border border-orange-500/30 rounded-3xl p-8 shadow-2xl backdrop-blur-md">
+              <div className="w-16 h-16 bg-orange-500/10 border border-orange-500/20 rounded-2xl flex items-center justify-center mx-auto mb-5 text-orange-500">
+                <Layers className="w-8 h-8 animate-pulse" />
+              </div>
+              <h3 className="text-xl font-bold tracking-tight text-white mb-2 font-sans">3D Workspace Preview Mode</h3>
+              <p className="text-slate-400 text-xs leading-relaxed mb-6 font-sans">
+                WebGL is currently disabled or unsupported in this sandboxed preview iframe context. 
+                Don't worry! Your 3D BIM data and structural extraction are fully processed and safe.
+              </p>
+              <div className="flex flex-col gap-3 justify-center">
+                <a 
+                  href={window.location.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold py-3 px-6 rounded-xl transition-all shadow-lg hover:shadow-orange-500/20 active:scale-95 flex items-center justify-center gap-2 font-mono uppercase tracking-wider"
+                >
+                  <Maximize2 className="w-4 h-4" />
+                  Open App in New Tab to view 3D
+                </a>
+                <p className="text-[10px] text-slate-500 font-sans">
+                  Opening in a new tab bypasses iframe canvas constraints and unlocks full GPU accelerated 3D rendering.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Embedded loader indicator elements */}
         <div className="absolute bottom-4 left-4 z-10 flex flex-col gap-2 pointer-events-none">
@@ -1773,7 +1893,7 @@ function ProjectView({ project, onBack, setCookieCheckFailed }: { project: Proje
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [viewMode, setViewMode] = useState<'chat' | 'split'>('split');
+  const [viewMode, setViewMode] = useState<'split' | 'chat' | 'energy' | 'reports'>('split');
 
   // Lifted Core BIM interactive navigation states
   const [viewType, setViewType] = useState<'3d' | '2d'>('3d');
@@ -1889,17 +2009,31 @@ function ProjectView({ project, onBack, setCookieCheckFailed }: { project: Proje
           <div className="flex flex-col gap-2">
             <button 
               onClick={() => setViewMode('split')}
-              className={cn("w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer", viewMode === 'split' ? "bg-orange-500 text-white shadow-lg shadow-orange-500/15" : "bg-zinc-800 text-zinc-400 hover:text-white")}
+              className={cn("w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-start px-4 gap-3 transition-all cursor-pointer", viewMode === 'split' ? "bg-orange-500 text-white shadow-lg shadow-orange-500/15" : "bg-zinc-800 text-zinc-400 hover:text-white")}
             >
               <LayoutDashboard className="w-4 h-4" />
-              ANALYSIS VIEW
+              3D PREVIEW MODEL
             </button>
             <button 
               onClick={() => setViewMode('chat')}
-              className={cn("w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer", viewMode === 'chat' ? "bg-orange-500 text-white shadow-lg shadow-orange-500/15" : "bg-zinc-800 text-zinc-400 hover:text-white")}
+              className={cn("w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-start px-4 gap-3 transition-all cursor-pointer", viewMode === 'chat' ? "bg-orange-500 text-white shadow-lg shadow-orange-500/15" : "bg-zinc-800 text-zinc-400 hover:text-white")}
             >
               <MessageSquare className="w-4 h-4" />
-              FULL CHAT
+              AI CO-PILOT CHAT
+            </button>
+            <button 
+              onClick={() => setViewMode('energy')}
+              className={cn("w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-start px-4 gap-3 transition-all cursor-pointer", viewMode === 'energy' ? "bg-orange-500 text-white shadow-lg shadow-orange-500/15" : "bg-zinc-800 text-zinc-400 hover:text-white")}
+            >
+              <Building2 className="w-4 h-4" />
+              ENERGY EFFICIENCY
+            </button>
+            <button 
+              onClick={() => setViewMode('reports')}
+              className={cn("w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-start px-4 gap-3 transition-all cursor-pointer", viewMode === 'reports' ? "bg-orange-500 text-white shadow-lg shadow-orange-500/15" : "bg-zinc-800 text-zinc-400 hover:text-white")}
+            >
+              <FileText className="w-4 h-4" />
+              TECHNICAL REPORTS
             </button>
           </div>
 
@@ -2021,95 +2155,103 @@ function ProjectView({ project, onBack, setCookieCheckFailed }: { project: Proje
 
       {/* Main Content Area */}
       <div className={cn("flex-1 flex", viewMode === 'split' ? "flex-col md:flex-row" : "flex-col")}>
-        {/* 3D Viewer / Data Panel */}
-        {viewMode === 'split' && (
-          <div className="flex-1 min-h-[300px] p-6 bg-zinc-950 flex flex-col gap-4">
-             <BIMPreview 
-               project={project} 
-               setCookieCheckFailed={setCookieCheckFailed}
-               viewType={viewType}
-               setViewType={setViewType}
-               selectedFloorId={selectedFloorId}
-               setSelectedFloorId={setSelectedFloorId}
-               selectedRoomId={selectedRoomId}
-               setSelectedRoomId={setSelectedRoomId}
-               cameraTarget={cameraTarget}
-               setCameraTarget={setCameraTarget}
-               roomDefinitions={roomDefinitions}
-             />
-          </div>
-        )}
-
-        {/* Chat Area */}
-        <div className={cn("flex flex-col bg-zinc-900 border-l border-zinc-850", viewMode === 'split' ? "w-full md:w-[450px]" : "flex-1")}>
-          <div className="flex-1 overflow-y-auto p-6 space-y-6" ref={scrollRef}>
-            {messages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center space-y-4 max-w-sm mx-auto pt-20">
-                <div className="bg-orange-950/40 p-4 rounded-2xl border border-orange-900/30">
-                  <MessageSquare className="w-8 h-8 text-[var(--accent)]" />
-                </div>
-                <p className="font-bold text-zinc-300 text-sm">Ask anything about the building model.</p>
-                <div className="flex flex-wrap gap-2 justify-center pt-2">
-                  {["How many windows?", "Floor details?", "Materials?"].map(q => (
-                    <button 
-                      key={q} 
-                      onClick={() => setInput(q)}
-                      className="text-[10px] px-3.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-full transition-all border border-zinc-750 font-black tracking-wider uppercase font-mono cursor-pointer"
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
+        {viewMode === 'energy' ? (
+          <EnergyAnalysisView project={project} />
+        ) : viewMode === 'reports' ? (
+          <ReportsView project={project} />
+        ) : (
+          <>
+            {/* 3D Viewer / Data Panel */}
+            {viewMode === 'split' && (
+              <div className="flex-1 min-h-[300px] p-6 bg-zinc-950 flex flex-col gap-4">
+                 <BIMPreview 
+                   project={project} 
+                   setCookieCheckFailed={setCookieCheckFailed}
+                   viewType={viewType}
+                   setViewType={setViewType}
+                   selectedFloorId={selectedFloorId}
+                   setSelectedFloorId={setSelectedFloorId}
+                   selectedRoomId={selectedRoomId}
+                   setSelectedRoomId={setSelectedRoomId}
+                   cameraTarget={cameraTarget}
+                   setCameraTarget={setCameraTarget}
+                   roomDefinitions={roomDefinitions}
+                 />
               </div>
-            ) : (
-              messages.map((m, i) => (
-                <div 
-                  key={i} 
-                  className={cn(
-                    "flex flex-col gap-1.5",
-                    m.role === 'user' ? "items-end" : "items-start"
-                  )}
-                >
-                  <div className={cn(
-                    "max-w-[90%] rounded-2xl p-4 text-sm leading-relaxed shadow-lg",
-                    m.role === 'user' ? "bg-orange-600 text-white" : "bg-zinc-800 text-zinc-200 border border-zinc-750"
-                  )}>
-                    {m.parts[0].text}
+            )}
+
+            {/* Chat Area */}
+            <div className={cn("flex flex-col bg-zinc-900 border-l border-zinc-850", viewMode === 'split' ? "w-full md:w-[450px]" : "flex-1")}>
+              <div className="flex-1 overflow-y-auto p-6 space-y-6" ref={scrollRef}>
+                {messages.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center space-y-4 max-w-sm mx-auto pt-20">
+                    <div className="bg-orange-950/40 p-4 rounded-2xl border border-orange-900/30">
+                      <MessageSquare className="w-8 h-8 text-[var(--accent)]" />
+                    </div>
+                    <p className="font-bold text-zinc-300 text-sm">Ask anything about the building model.</p>
+                    <div className="flex flex-wrap gap-2 justify-center pt-2">
+                      {["How many windows?", "Floor details?", "Materials?"].map(q => (
+                        <button 
+                          key={q} 
+                          onClick={() => setInput(q)}
+                          className="text-[10px] px-3.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-full transition-all border border-zinc-750 font-black tracking-wider uppercase font-mono cursor-pointer"
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <span className="text-[10px] font-black text-zinc-500 uppercase px-1 font-mono">
-                    {m.role === 'user' ? 'Me' : 'Mind AI'}
-                  </span>
-                </div>
-              ))
-            )}
-            {isTyping && (
-              <div className="flex flex-col items-start gap-1">
-                <div className="bg-zinc-800 border border-zinc-750 rounded-2xl p-4 flex items-center justify-center">
-                  <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />
+                ) : (
+                  messages.map((m, i) => (
+                    <div 
+                      key={i} 
+                      className={cn(
+                        "flex flex-col gap-1.5",
+                        m.role === 'user' ? "items-end" : "items-start"
+                      )}
+                    >
+                      <div className={cn(
+                        "max-w-[90%] rounded-2xl p-4 text-sm leading-relaxed shadow-lg",
+                        m.role === 'user' ? "bg-orange-600 text-white" : "bg-zinc-800 text-zinc-200 border border-zinc-750"
+                      )}>
+                        {m.parts[0].text}
+                      </div>
+                      <span className="text-[10px] font-black text-zinc-500 uppercase px-1 font-mono">
+                        {m.role === 'user' ? 'Me' : 'Mind AI'}
+                      </span>
+                    </div>
+                  ))
+                )}
+                {isTyping && (
+                  <div className="flex flex-col items-start gap-1">
+                    <div className="bg-zinc-800 border border-zinc-750 rounded-2xl p-4 flex items-center justify-center">
+                      <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-6 border-t border-zinc-850 bg-zinc-950/40">
+                <div className="relative">
+                    <input 
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                      placeholder="Ask Gemini about the model, dimensions, materials..."
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl pl-6 pr-14 py-4 focus:outline-none focus:ring-2 focus:ring-orange-500/30 transition-all font-medium text-sm text-zinc-100 placeholder-zinc-500"
+                    />
+                    <button 
+                      onClick={handleSend}
+                      disabled={!input.trim() || isTyping}
+                      className="absolute right-2 top-2 bottom-2 bg-orange-500 hover:bg-orange-600 text-white p-3 rounded-xl hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center justify-center cursor-pointer"
+                    >
+                      <Send className="w-5 h-5" />
+                    </button>
                 </div>
               </div>
-            )}
-          </div>
-
-          <div className="p-6 border-t border-zinc-850 bg-zinc-950/40">
-            <div className="relative">
-                <input 
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder="Ask Gemini about the model, dimensions, materials..."
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl pl-6 pr-14 py-4 focus:outline-none focus:ring-2 focus:ring-orange-500/30 transition-all font-medium text-sm text-zinc-100 placeholder-zinc-500"
-                />
-                <button 
-                  onClick={handleSend}
-                  disabled={!input.trim() || isTyping}
-                  className="absolute right-2 top-2 bottom-2 bg-orange-500 hover:bg-orange-600 text-white p-3 rounded-xl hover:opacity-90 disabled:opacity-50 transition-opacity flex items-center justify-center cursor-pointer"
-                >
-                  <Send className="w-5 h-5" />
-                </button>
             </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
     </div>
   );

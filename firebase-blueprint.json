@@ -53,6 +53,113 @@
         }
       },
       "required": ["id", "name", "summary", "uploadedAt", "ownerId"]
+    },
+    "EnergyAnalysis": {
+      "title": "EnergyAnalysis",
+      "description": "AI-generated sustainability and energy efficiency analysis results",
+      "type": "object",
+      "properties": {
+        "energyScore": {
+          "type": "integer",
+          "description": "Insulation and structural sustainability score"
+        },
+        "sustainabilityRating": {
+          "type": "string",
+          "description": "Literal rating based on score: Poor, Average, Good, Excellent"
+        },
+        "annualEnergyConsumption": {
+          "type": "number",
+          "description": "Calculated annual energy consumption in kWh"
+        },
+        "carbonFootprint": {
+          "type": "number",
+          "description": "Estimated carbon emissions footprint in metric tons"
+        },
+        "coolingLoadEstimate": {
+          "type": "number",
+          "description": "Estimated peak cooling requirements in kW"
+        },
+        "heatingLoadEstimate": {
+          "type": "number",
+          "description": "Estimated peak heating requirements in kW"
+        },
+        "naturalLightingScore": {
+          "type": "integer",
+          "description": "Aesthetic natural day lighting factor from 0 to 100"
+        },
+        "sustainabilitySummary": {
+          "type": "string",
+          "description": "Concise green-building AI executive summary"
+        },
+        "recommendations": {
+          "type": "array",
+          "description": "List of structural and design energy efficiency improvements"
+        },
+        "generatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when report was completed"
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ID of the associated project"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Owner of the parent project"
+        }
+      },
+      "required": [
+        "energyScore",
+        "sustainabilityRating",
+        "annualEnergyConsumption",
+        "carbonFootprint",
+        "coolingLoadEstimate",
+        "heatingLoadEstimate",
+        "naturalLightingScore",
+        "sustainabilitySummary",
+        "recommendations",
+        "generatedAt",
+        "projectId",
+        "ownerId"
+      ]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Generated professional AI technical report metadata",
+      "type": "object",
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "description": "Unique identifier of the generated report"
+        },
+        "generatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when report was generated"
+        },
+        "reportUrl": {
+          "type": "string",
+          "description": "Download and print endpoint URL"
+        },
+        "reportSize": {
+          "type": "number",
+          "description": "Size of PDF document in bytes"
+        },
+        "reportStatus": {
+          "type": "string",
+          "description": "Completion state of the document"
+        },
+        "projectId": {
+          "type": "string",
+          "description": "ID of the associated project"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Owner of the parent project"
+        }
+      },
+      "required": ["reportId", "generatedAt", "reportUrl", "reportSize", "reportStatus", "projectId", "ownerId"]
     }
   },
   "firestore": {
@@ -63,6 +170,14 @@
     "/projects/{projectId}": {
       "schema": "Project",
       "description": "Project documents containing IFC metadata and summary analysis"
+    },
+    "/projects/{projectId}/energyAnalysis/{analysisId}": {
+      "schema": "EnergyAnalysis",
+      "description": "AI-generated energy performance ratings"
+    },
+    "/projects/{projectId}/reports/{reportId}": {
+      "schema": "Report",
+      "description": "AI generated complete executive report list"
     }
   }
 }
