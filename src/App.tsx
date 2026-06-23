@@ -176,8 +176,30 @@ export default function App() {
   // Set up Firebase Auth listener
   useEffect(() => {
     testConnection();
+    
+    // Check if there is a saved sandbox user session
+    const savedSandboxUser = localStorage.getItem('sandbox_user');
+    if (savedSandboxUser) {
+      try {
+        const parsed = JSON.parse(savedSandboxUser);
+        setUser(parsed);
+        setAuthLoading(false);
+        return;
+      } catch (e) {
+        console.error("Failed to parse saved sandbox user", e);
+      }
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
+      if (currentUser) {
+        setUser(currentUser);
+        localStorage.removeItem('sandbox_user'); // Clear sandbox if real auth successfully signs in
+      } else {
+        const checkSandbox = localStorage.getItem('sandbox_user');
+        if (!checkSandbox) {
+          setUser(null);
+        }
+      }
       setAuthLoading(false);
       
       if (currentUser) {
@@ -201,10 +223,25 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Listen to the user's projects real-time in Firestore if authenticated
+  // Listen to the user's projects real-time in Firestore if authenticated, or load from localStorage in sandbox mode
   useEffect(() => {
     if (!user) {
       setProjects([]);
+      return;
+    }
+
+    if (user && 'isSandbox' in user) {
+      const stored = localStorage.getItem('sandbox_projects');
+      if (stored) {
+        try {
+          setProjects(JSON.parse(stored));
+        } catch (e) {
+          console.error("Failed to parse sandbox projects", e);
+          setProjects([]);
+        }
+      } else {
+        setProjects([]);
+      }
       return;
     }
 
@@ -241,6 +278,12 @@ export default function App() {
 
   // Handle redirect result on component mount/load
   useEffect(() => {
+    // Skip if there is already a saved sandbox guest user session
+    if (localStorage.getItem('sandbox_user')) {
+      console.log("Sandbox guest session active, skipping redirect checks.");
+      return;
+    }
+
     // Skip if running inside an iframe, as getRedirectResult is not supported and throws security errors
     let isInIframe = false;
     try {
@@ -281,11 +324,12 @@ export default function App() {
       setCurrentPage('dashboard');
       setShowAuthModal(false);
     } catch (err: any) {
-      console.error("Sign-in popup error details:", err);
-      // If the user cancelled or another popup request was cancelled, we don't need to show a huge info modal.
-      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+      // If the user cancelled or another popup request was cancelled, we don't need to trigger a console.error or show an error modal.
+      if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') {
+        console.warn("Sign-in popup closed or cancelled by user.");
         return;
       }
+      console.error("Sign-in popup error details:", err);
       setAuthError(err.message || String(err));
       setShowAuthErrorModal(true);
     }
@@ -305,9 +349,18 @@ export default function App() {
 
   const handleSignInAnonymously = async () => {
     try {
-      await signInAnonymously(auth);
+      // Instead of calling Firebase's signInAnonymously which requires project configuration & permissions,
+      // we bypass it and use our super-robust Local Sandbox Mode!
+      const sandboxUser = {
+        uid: 'sandbox-guest-user',
+        email: 'guest@constructmind.local',
+        displayName: 'Guest Architect',
+        isSandbox: true
+      };
+      setUser(sandboxUser as any);
       setCurrentPage('dashboard');
       setShowAuthModal(false);
+      localStorage.setItem('sandbox_user', JSON.stringify(sandboxUser));
     } catch (err: any) {
       console.error("Anonymous sign-in error details:", err);
       setAuthError(err.message || String(err));
@@ -322,7 +375,7 @@ export default function App() {
   const [isRegistering, setIsRegistering] = useState(false);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authFormError, setAuthFormError] = useState<string | null>(null);
-  const [activeAuthTab, setActiveAuthTab] = useState<'google' | 'email' | 'guest'>('google');
+  const [activeAuthTab, setActiveAuthTab] = useState<'google' | 'guest'>('google');
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -359,7 +412,11 @@ export default function App() {
       setAuthName('');
     } catch (err: any) {
       console.error("Email auth error details:", err);
-      setAuthFormError(err.message || String(err));
+      if (err?.code === 'auth/operation-not-allowed') {
+        setAuthFormError("Email/Password authentication is not enabled in your Firebase project. To enable it:\n\n1. Go to your Firebase Console (console.firebase.google.com)\n2. Navigate to Authentication > Sign-in method\n3. Click 'Add new provider' and choose 'Email/Password'\n4. Toggle 'Enable' and click Save.");
+      } else {
+        setAuthFormError(err.message || String(err));
+      }
     } finally {
       setAuthSubmitting(false);
     }
@@ -367,7 +424,9 @@ export default function App() {
 
   const handleSignOut = async () => {
     try {
+      localStorage.removeItem('sandbox_user');
       await signOut(auth);
+      setUser(null);
       setCurrentPage('landing');
       setSelectedProjectId(null);
     } catch (err) {
@@ -378,9 +437,16 @@ export default function App() {
   const handleDeleteProject = async (projectId: string) => {
     setDeletionError(null);
     try {
-      // 1. Delete document from Firestore
-      const projectDocRef = doc(db, 'projects', projectId);
-      await deleteDoc(projectDocRef);
+      if (user && 'isSandbox' in user) {
+        // Delete from local storage sandbox list
+        const updated = projects.filter(p => p.id !== projectId);
+        setProjects(updated);
+        localStorage.setItem('sandbox_projects', JSON.stringify(updated));
+      } else {
+        // 1. Delete document from Firestore
+        const projectDocRef = doc(db, 'projects', projectId);
+        await deleteDoc(projectDocRef);
+      }
       
       // 2. Unset active project selection if that project was deleted
       if (selectedProjectId === projectId) {
@@ -396,12 +462,14 @@ export default function App() {
         console.error("Failed to delete IFC file from backend disk:", err);
       }
     } catch (err: any) {
-      console.error("Failed to delete project document from firestore:", err);
+      console.error("Failed to delete project document:", err);
       let errorText = err.message || String(err);
-      try {
-        handleFirestoreError(err, OperationType.DELETE, `projects/${projectId}`);
-      } catch (fError: any) {
-        errorText = fError.message;
+      if (!(user && 'isSandbox' in user)) {
+        try {
+          handleFirestoreError(err, OperationType.DELETE, `projects/${projectId}`);
+        } catch (fError: any) {
+          errorText = fError.message;
+        }
       }
       setDeletionError(errorText);
       throw err;
@@ -452,6 +520,7 @@ export default function App() {
             }}
             onDeleteProject={(p) => setProjectToDelete(p)}
             setCookieCheckFailed={setCookieCheckFailed}
+            user={user}
           />
         )}
         {currentPage === 'project' && selectedProject && (
@@ -578,6 +647,19 @@ export default function App() {
                       <div className="bg-red-50 text-red-700 text-xs font-mono p-3 rounded-lg border border-red-100 whitespace-pre-wrap max-h-28 overflow-y-auto">
                         {authError}
                       </div>
+                    </div>
+                  )}
+
+                  {authError && authError.includes('admin-restricted-operation') && (
+                    <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-xl p-3.5 leading-relaxed text-left">
+                      <strong className="font-bold block mb-1 text-amber-900">⚠️ Firebase Admin Sign-Up Restriction Detected:</strong>
+                      This error occurs when user registration is disabled or restricted to administrators in your Firebase project settings. To allow user sign-ups:
+                      <ol className="list-decimal pl-4 mt-2 space-y-1.5 font-medium">
+                        <li>Go to your <a href="https://console.firebase.google.com" target="_blank" rel="noopener noreferrer" className="underline font-bold hover:text-amber-950">Firebase Console</a>.</li>
+                        <li>Select your active project, then go to <strong>Authentication &gt; Settings &gt; User actions</strong>.</li>
+                        <li>Ensure that the <strong>"Enable create (sign up)"</strong> checkbox is toggled <strong>ON</strong> and click <strong>Save</strong>.</li>
+                        <li>Alternatively, continue using our zero-setup <strong>Guest Workspace Mode</strong>!</li>
+                      </ol>
                     </div>
                   )}
 
@@ -712,19 +794,6 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => {
-                    setActiveAuthTab('email');
-                    setAuthFormError(null);
-                  }}
-                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    activeAuthTab === 'email' 
-                      ? 'bg-zinc-800 text-white shadow-sm' 
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  Email & Pass
-                </button>
-                <button
-                  onClick={() => {
                     setActiveAuthTab('guest');
                     setAuthFormError(null);
                   }}
@@ -758,95 +827,13 @@ export default function App() {
                   <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-850 flex gap-2.5">
                     <Info className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
                     <p className="text-[11px] text-zinc-400 leading-relaxed">
-                      Note: Google sign-in may require configuring Authorized Domains in your Firebase Console if deploying to custom URLs. If Google Sign-In fails, switch to the <strong>Email</strong> or <strong>Guest</strong> tab above!
+                      Note: Google sign-in may require configuring Authorized Domains in your Firebase Console if deploying to custom URLs. If Google Sign-In fails, switch to the <strong>Guest</strong> tab above!
                     </p>
                   </div>
                 </div>
               )}
 
-              {activeAuthTab === 'email' && (
-                <form onSubmit={handleEmailAuth} className="space-y-4">
-                  {authFormError && (
-                    <div className="bg-red-950/40 text-red-400 border border-red-900/30 p-3 rounded-xl text-xs font-medium leading-relaxed flex gap-2">
-                      <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
-                      <span>{authFormError}</span>
-                    </div>
-                  )}
 
-                  {isRegistering && (
-                    <div className="space-y-1.5">
-                      <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider block">Full Name</label>
-                      <div className="relative">
-                        <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                        <input
-                          type="text"
-                          required
-                          value={authName}
-                          onChange={(e) => setAuthName(e.target.value)}
-                          placeholder="Alex Mercer"
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500/50 transition-colors"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-1.5">
-                    <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider block">Email Address</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                      <input
-                        type="email"
-                        required
-                        value={authEmail}
-                        onChange={(e) => setAuthEmail(e.target.value)}
-                        placeholder="your@email.com"
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500/50 transition-colors"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider block">Password</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                      <input
-                        type="password"
-                        required
-                        minLength={6}
-                        value={authPassword}
-                        onChange={(e) => setAuthPassword(e.target.value)}
-                        placeholder="••••••••"
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500/50 transition-colors"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={authSubmitting}
-                    className="w-full bg-gradient-to-r from-orange-500 to-amber-600 text-white py-3 rounded-xl font-bold text-sm cursor-pointer transition-all active:scale-98 disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {authSubmitting ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      isRegistering ? "Create Account & Sign In" : "Sign In with Email"
-                    )}
-                  </button>
-
-                  <div className="text-center pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsRegistering(!isRegistering);
-                        setAuthFormError(null);
-                      }}
-                      className="text-orange-400 hover:text-orange-300 text-xs font-bold underline cursor-pointer"
-                    >
-                      {isRegistering ? "Already have an account? Sign In" : "Don't have an account? Create one"}
-                    </button>
-                  </div>
-                </form>
-              )}
 
               {activeAuthTab === 'guest' && (
                 <div className="space-y-5">
@@ -1031,12 +1018,13 @@ function LandingPage({ onGetStarted, user }: { onGetStarted: () => void, user: F
   );
 }
 
-function Dashboard({ projects, onProjectAdded, onSelectProject, onDeleteProject, setCookieCheckFailed }: { 
+function Dashboard({ projects, onProjectAdded, onSelectProject, onDeleteProject, setCookieCheckFailed, user }: { 
   projects: Project[], 
   onProjectAdded: (p: Project) => void,
   onSelectProject: (id: string) => void,
   onDeleteProject: (p: Project) => void,
-  setCookieCheckFailed?: (val: boolean) => void
+  setCookieCheckFailed?: (val: boolean) => void,
+  user: any
 }) {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -1105,29 +1093,53 @@ function Dashboard({ projects, onProjectAdded, onSelectProject, onDeleteProject,
         throw new Error(`Failed to parse upload response: ${e?.message || 'Invalid JSON format'}. Response started with: "${respText.slice(0, 150)}"`);
       }
       
-      // Save project properties to Firestore under /projects/{projectId}
-      if (auth.currentUser) {
-        try {
-          const projectDocRef = doc(db, 'projects', data.projectId);
-          const projectPayload = {
-            id: data.projectId,
-            name: data.name,
-            summary: data.summary,
-            uploadedAt: serverTimestamp(),
-            ownerId: auth.currentUser.uid
-          };
-          await setDoc(projectDocRef, projectPayload);
-          
+      // Save project properties to Firestore under /projects/{projectId} or localStorage if in sandbox mode
+      if (user) {
+        if (user.isSandbox) {
           const localProject: Project = {
             id: data.projectId,
             name: data.name,
             summary: data.summary,
             uploadedAt: new Date().toISOString()
           };
+          
+          // Load existing sandbox projects, append new one, and save
+          const stored = localStorage.getItem('sandbox_projects');
+          let currentList: Project[] = [];
+          if (stored) {
+            try {
+              currentList = JSON.parse(stored);
+            } catch (e) {
+              console.error("Failed to parse sandbox projects list", e);
+            }
+          }
+          const updatedList = [...currentList, localProject];
+          localStorage.setItem('sandbox_projects', JSON.stringify(updatedList));
+          
           onProjectAdded(localProject);
-        } catch (dbErr) {
-          console.error("Error setting project in firestore: ", dbErr);
-          handleFirestoreError(dbErr, OperationType.CREATE, `projects/${data.projectId}`);
+        } else {
+          try {
+            const projectDocRef = doc(db, 'projects', data.projectId);
+            const projectPayload = {
+              id: data.projectId,
+              name: data.name,
+              summary: data.summary,
+              uploadedAt: serverTimestamp(),
+              ownerId: user.uid
+            };
+            await setDoc(projectDocRef, projectPayload);
+            
+            const localProject: Project = {
+              id: data.projectId,
+              name: data.name,
+              summary: data.summary,
+              uploadedAt: new Date().toISOString()
+            };
+            onProjectAdded(localProject);
+          } catch (dbErr) {
+            console.error("Error setting project in firestore: ", dbErr);
+            handleFirestoreError(dbErr, OperationType.CREATE, `projects/${data.projectId}`);
+          }
         }
       } else {
         throw new Error("You must be signed in to upload and save projects.");
