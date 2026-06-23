@@ -1,10 +1,10 @@
 {
-  "projectId": "snappy-bond-v5xj8",
-  "appId": "1:160649346500:web:72f1fd718531d76c317891",
-  "apiKey": "AIzaSyCgpfWVHLaK8Y_odqA3bLCYT04Gt4dDSaQ",
-  "authDomain": "snappy-bond-v5xj8.firebaseapp.com",
+  "projectId": "constructmind-75a29",
+  "appId": "1:530374402721:web:cfbcbebf50e85d1f9706e0",
+  "apiKey": "AIzaSyDu6hZLrdGTOO9BcUqz8cjTk2YbWq-fTtg",
+  "authDomain": "constructmind-75a29.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-7880ed64-42f7-48fd-ad64-890ab0be4610",
-  "storageBucket": "snappy-bond-v5xj8.firebasestorage.app",
-  "messagingSenderId": "160649346500",
-  "measurementId": ""
+  "storageBucket": "constructmind-75a29.firebasestorage.app",
+  "messagingSenderId": "530374402721",
+  "measurementId": "G-C90VWVK340"
 }
