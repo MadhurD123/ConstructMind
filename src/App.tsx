@@ -11,7 +11,11 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
   signInWithRedirect,
-  getRedirectResult
+  getRedirectResult,
+  signInAnonymously,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile
 } from 'firebase/auth';
 import { 
   doc, 
@@ -47,7 +51,12 @@ import {
   RefreshCw,
   Eye,
   Crosshair,
-  Trash2
+  Trash2,
+  Mail,
+  Lock,
+  User,
+  Sparkles,
+  ShieldAlert
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -179,7 +188,7 @@ export default function App() {
           if (!userSnap.exists()) {
             await setDoc(userDocRef, {
               uid: currentUser.uid,
-              email: currentUser.email,
+              email: currentUser.email || `anonymous-${currentUser.uid}@anonymous.local`,
               displayName: currentUser.displayName || 'Anonymous User',
               createdAt: serverTimestamp()
             });
@@ -228,6 +237,7 @@ export default function App() {
 
   const [authError, setAuthError] = useState<string | null>(null);
   const [showAuthErrorModal, setShowAuthErrorModal] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
   // Handle redirect result on component mount/load
   useEffect(() => {
@@ -269,6 +279,7 @@ export default function App() {
     try {
       await signInWithPopup(auth, provider);
       setCurrentPage('dashboard');
+      setShowAuthModal(false);
     } catch (err: any) {
       console.error("Sign-in popup error details:", err);
       // If the user cancelled or another popup request was cancelled, we don't need to show a huge info modal.
@@ -289,6 +300,68 @@ export default function App() {
       console.error("Sign-in redirect error details:", err);
       setAuthError(err.message || String(err));
       setShowAuthErrorModal(true);
+    }
+  };
+
+  const handleSignInAnonymously = async () => {
+    try {
+      await signInAnonymously(auth);
+      setCurrentPage('dashboard');
+      setShowAuthModal(false);
+    } catch (err: any) {
+      console.error("Anonymous sign-in error details:", err);
+      setAuthError(err.message || String(err));
+      setShowAuthErrorModal(true);
+    }
+  };
+
+  // State variables for custom email/password sign-in and registration
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authName, setAuthName] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authFormError, setAuthFormError] = useState<string | null>(null);
+  const [activeAuthTab, setActiveAuthTab] = useState<'google' | 'email' | 'guest'>('google');
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthSubmitting(true);
+    setAuthFormError(null);
+    try {
+      if (isRegistering) {
+        if (!authEmail || !authPassword || !authName) {
+          throw new Error('Please fill out all fields.');
+        }
+        if (authPassword.length < 6) {
+          throw new Error('Password must be at least 6 characters long.');
+        }
+        const cred = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+        await updateProfile(cred.user, { displayName: authName });
+        // Create user document in firestore
+        const userDocRef = doc(db, 'users', cred.user.uid);
+        await setDoc(userDocRef, {
+          uid: cred.user.uid,
+          email: cred.user.email,
+          displayName: authName,
+          createdAt: serverTimestamp()
+        });
+      } else {
+        if (!authEmail || !authPassword) {
+          throw new Error('Please enter both email and password.');
+        }
+        await signInWithEmailAndPassword(auth, authEmail, authPassword);
+      }
+      setCurrentPage('dashboard');
+      setShowAuthModal(false);
+      setAuthEmail('');
+      setAuthPassword('');
+      setAuthName('');
+    } catch (err: any) {
+      console.error("Email auth error details:", err);
+      setAuthFormError(err.message || String(err));
+    } finally {
+      setAuthSubmitting(false);
     }
   };
 
@@ -349,7 +422,7 @@ export default function App() {
       <Navbar 
         onNavigate={setCurrentPage} 
         user={user} 
-        onSignIn={handleSignIn} 
+        onSignIn={() => setShowAuthModal(true)} 
         onSignOut={handleSignOut} 
       />
       
@@ -360,7 +433,7 @@ export default function App() {
               if (user) {
                 setCurrentPage('dashboard');
               } else {
-                handleSignIn();
+                setShowAuthModal(true);
               }
             }} 
             user={user}
@@ -546,27 +619,255 @@ export default function App() {
                   </div>
 
                   {/* Actions */}
-                  <div className="flex flex-col sm:flex-row gap-2 mt-4 pt-4 border-t border-gray-100">
+                  <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-gray-100">
                     <button
                       type="button"
                       onClick={() => {
                         setShowAuthErrorModal(false);
-                        handleSignInRedirect();
+                        handleSignInAnonymously();
                       }}
-                      className="flex-1 bg-black text-white hover:opacity-90 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center gap-2 cursor-pointer transition-opacity"
+                      className="w-full bg-gradient-to-r from-orange-500 to-amber-600 text-white hover:opacity-95 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center gap-2 cursor-pointer transition-opacity"
                     >
-                      Use Redirect Login
+                      <Sparkles className="w-3.5 h-3.5" /> Continue as Guest (Bypasses Domain Restrictions!)
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowAuthErrorModal(false)}
-                      className="border border-gray-200 hover:bg-gray-50 text-gray-600 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center cursor-pointer transition-colors"
-                    >
-                      Dismiss / Retry Popup
-                    </button>
+                    <div className="flex flex-col sm:flex-row gap-2 w-full">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAuthErrorModal(false);
+                          handleSignInRedirect();
+                        }}
+                        className="flex-1 bg-black text-white hover:opacity-90 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center gap-2 cursor-pointer transition-opacity"
+                      >
+                        Use Redirect Login
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowAuthErrorModal(false)}
+                        className="flex-1 border border-gray-200 hover:bg-gray-50 text-gray-600 py-2.5 px-4 rounded-xl font-bold text-xs inline-flex items-center justify-center cursor-pointer transition-colors"
+                      >
+                        Dismiss / Retry Popup
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Custom Auth Selection and Email Sign In/Register Modal */}
+      <AnimatePresence>
+        {showAuthModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/85 backdrop-blur-md z-[9999] flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              className="bg-zinc-900 rounded-3xl max-w-md w-full p-6 shadow-2xl relative overflow-hidden border border-zinc-800 text-left"
+            >
+              {/* Close Button */}
+              <button 
+                onClick={() => {
+                  setShowAuthModal(false);
+                  setAuthFormError(null);
+                }}
+                className="absolute top-4 right-4 p-2 text-zinc-400 hover:text-white rounded-full hover:bg-zinc-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="flex flex-col items-center text-center mb-6">
+                <div className="bg-gradient-to-tr from-orange-500 to-amber-500 p-3 rounded-2xl text-white mb-3 shadow-lg shadow-orange-500/10">
+                  <Building2 className="w-6 h-6 animate-pulse" />
+                </div>
+                <h3 className="font-sans font-black text-xl text-zinc-50 tracking-tight">
+                  ConstructMind AI Sign-In
+                </h3>
+                <p className="text-zinc-400 text-xs mt-1.5 max-w-xs leading-relaxed">
+                  Choose your preferred authentication method to start analyzing construction models.
+                </p>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex bg-zinc-950 p-1 rounded-xl mb-6 border border-zinc-850">
+                <button
+                  onClick={() => {
+                    setActiveAuthTab('google');
+                    setAuthFormError(null);
+                  }}
+                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeAuthTab === 'google' 
+                      ? 'bg-zinc-800 text-white shadow-sm' 
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  Google
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveAuthTab('email');
+                    setAuthFormError(null);
+                  }}
+                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeAuthTab === 'email' 
+                      ? 'bg-zinc-800 text-white shadow-sm' 
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  Email & Pass
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveAuthTab('guest');
+                    setAuthFormError(null);
+                  }}
+                  className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeAuthTab === 'guest' 
+                      ? 'bg-zinc-800 text-white shadow-sm' 
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  Guest Access
+                </button>
+              </div>
+
+              {/* Tab Content */}
+              {activeAuthTab === 'google' && (
+                <div className="space-y-4">
+                  <p className="text-zinc-400 text-xs leading-relaxed text-center py-2">
+                    Log in quickly and securely with your Google Account to automatically sync projects across all your devices.
+                  </p>
+                  
+                  <button
+                    onClick={handleSignIn}
+                    className="w-full flex items-center justify-center gap-3 bg-white text-zinc-950 hover:bg-zinc-100 py-3 px-4 rounded-xl font-bold text-sm cursor-pointer transition-all active:scale-98 shadow-md"
+                  >
+                    <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
+                      <path fill="#EA4335" d="M12.24 10.285V14.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.859-3.578-7.859-8s3.529-8 7.859-8c2.46 0 4.105 1.025 5.047 1.926l3.227-3.11C18.281 1.043 15.42 0 12.24 0 5.58 0 0 5.37 0 12s5.58 12 12.24 12c6.96 0 11.57-4.814 11.57-11.79 0-.79-.08-1.397-.24-1.925H12.24z" />
+                    </svg>
+                    Continue with Google
+                  </button>
+
+                  <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-850 flex gap-2.5">
+                    <Info className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      Note: Google sign-in may require configuring Authorized Domains in your Firebase Console if deploying to custom URLs. If Google Sign-In fails, switch to the <strong>Email</strong> or <strong>Guest</strong> tab above!
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {activeAuthTab === 'email' && (
+                <form onSubmit={handleEmailAuth} className="space-y-4">
+                  {authFormError && (
+                    <div className="bg-red-950/40 text-red-400 border border-red-900/30 p-3 rounded-xl text-xs font-medium leading-relaxed flex gap-2">
+                      <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{authFormError}</span>
+                    </div>
+                  )}
+
+                  {isRegistering && (
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider block">Full Name</label>
+                      <div className="relative">
+                        <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                        <input
+                          type="text"
+                          required
+                          value={authName}
+                          onChange={(e) => setAuthName(e.target.value)}
+                          placeholder="Alex Mercer"
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500/50 transition-colors"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider block">Email Address</label>
+                    <div className="relative">
+                      <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="your@email.com"
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500/50 transition-colors"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider block">Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500/50 transition-colors"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authSubmitting}
+                    className="w-full bg-gradient-to-r from-orange-500 to-amber-600 text-white py-3 rounded-xl font-bold text-sm cursor-pointer transition-all active:scale-98 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {authSubmitting ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      isRegistering ? "Create Account & Sign In" : "Sign In with Email"
+                    )}
+                  </button>
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRegistering(!isRegistering);
+                        setAuthFormError(null);
+                      }}
+                      className="text-orange-400 hover:text-orange-300 text-xs font-bold underline cursor-pointer"
+                    >
+                      {isRegistering ? "Already have an account? Sign In" : "Don't have an account? Create one"}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {activeAuthTab === 'guest' && (
+                <div className="space-y-5">
+                  <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-850 flex gap-3 text-left">
+                    <Sparkles className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-zinc-200 text-xs font-bold leading-none mb-1">Instant Guest Workspace</h4>
+                      <p className="text-[11px] text-zinc-400 leading-relaxed">
+                        Sign in anonymously to instantly try all features. No configurations, passwords, or Whitelist Whys are required. Ideal for evaluating on any domain.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleSignInAnonymously}
+                    className="w-full bg-zinc-850 text-white hover:bg-zinc-800 py-3 rounded-xl font-bold text-sm cursor-pointer transition-all active:scale-98 flex items-center justify-center gap-2 border border-zinc-800"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" /> Launch as Guest
+                  </button>
+                </div>
+              )}
             </motion.div>
           </motion.div>
         )}
